@@ -13,13 +13,14 @@ import (
 
 // whatsappInstanceConfig maps the non-secret config JSONB from the channel_instances table.
 type whatsappInstanceConfig struct {
-	DMPolicy       string   `json:"dm_policy,omitempty"`
-	GroupPolicy    string   `json:"group_policy,omitempty"`
-	RequireMention *bool    `json:"require_mention,omitempty"`
-	HistoryLimit   int      `json:"history_limit,omitempty"`
-	AllowFrom      []string `json:"allow_from,omitempty"`
-	ReactionLevel  string   `json:"reaction_level,omitempty"`
-	BlockReply     *bool    `json:"block_reply,omitempty"`
+	DMPolicy       string                                    `json:"dm_policy,omitempty"`
+	GroupPolicy    string                                    `json:"group_policy,omitempty"`
+	RequireMention *bool                                     `json:"require_mention,omitempty"`
+	HistoryLimit   int                                       `json:"history_limit,omitempty"`
+	AllowFrom      []string                                  `json:"allow_from,omitempty"`
+	ReactionLevel  string                                    `json:"reaction_level,omitempty"`
+	BlockReply     *bool                                     `json:"block_reply,omitempty"`
+	Groups         map[string]*config.WhatsAppGroupConfig    `json:"groups,omitempty"`
 }
 
 // FactoryWithDB returns a ChannelFactory with DB access for whatsmeow auth state.
@@ -60,6 +61,7 @@ func FactoryWithDB(db *sql.DB, pendingStore store.PendingMessageStore, dialect s
 			HistoryLimit:   ic.HistoryLimit,
 			ReactionLevel:  ic.ReactionLevel,
 			BlockReply:     ic.BlockReply,
+			Groups:         ic.Groups,
 		}
 		// DB instances default to "pairing" for groups (secure by default).
 		if waCfg.GroupPolicy == "" {

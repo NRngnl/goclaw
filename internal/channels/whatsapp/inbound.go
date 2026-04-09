@@ -109,7 +109,7 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 	if historyLimit == 0 {
 		historyLimit = channels.DefaultGroupHistoryLimit
 	}
-	if peerKind == "group" && c.config.RequireMention != nil && *c.config.RequireMention {
+	if peerKind == "group" && c.requireMentionForGroup(chatID) {
 		if !c.isMentioned(evt) && !c.isReplyToBot(evt) {
 			// Not mentioned — record for context and skip.
 			// Use "Name (phone)" format for stable identity in group history.
@@ -201,6 +201,14 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		userID = senderID[:idx]
 	}
 
+	// Resolve agent: per-group override or channel default.
+	agentID := c.AgentID()
+	if peerKind == "group" {
+		if override := c.groupAgentOverride(chatID); override != "" {
+			agentID = override
+		}
+	}
+
 	c.Bus().PublishInbound(bus.InboundMessage{
 		Channel:  c.Name(),
 		SenderID: senderID,
@@ -209,7 +217,7 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		Media:    mediaFiles,
 		PeerKind: peerKind,
 		UserID:   userID,
-		AgentID:  c.AgentID(),
+		AgentID:  agentID,
 		TenantID: c.TenantID(),
 		Metadata: metadata,
 	})
@@ -295,6 +303,31 @@ func extractQuotedText(msg *waE2E.Message) string {
 		return "[document]"
 	}
 	return ""
+}
+
+// groupAgentOverride returns the agent key for a specific group if configured,
+// or empty string to use the channel default.
+func (c *Channel) groupAgentOverride(chatID string) string {
+	if c.config.Groups == nil {
+		return ""
+	}
+	if gc, ok := c.config.Groups[chatID]; ok && gc != nil && gc.AgentID != "" {
+		return gc.AgentID
+	}
+	return ""
+}
+
+// requireMentionForGroup checks if require_mention is enabled for a specific group.
+// Per-group override takes priority over channel-level setting.
+func (c *Channel) requireMentionForGroup(chatID string) bool {
+	// Per-group override.
+	if c.config.Groups != nil {
+		if gc, ok := c.config.Groups[chatID]; ok && gc != nil && gc.RequireMention != nil {
+			return *gc.RequireMention
+		}
+	}
+	// Channel-level default.
+	return c.config.RequireMention != nil && *c.config.RequireMention
 }
 
 // isMentioned checks if the linked account is @mentioned in a group message.

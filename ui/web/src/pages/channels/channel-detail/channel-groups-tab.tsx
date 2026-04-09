@@ -4,6 +4,7 @@ import { Save, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ChannelInstanceData } from "@/types/channel";
 import { TelegramGroupOverrides } from "../telegram-group-overrides";
+import { WhatsAppGroupOverrides, type WhatsAppGroupConfigValues } from "../whatsapp-group-overrides";
 import type { TelegramGroupConfigValues } from "../telegram-group-fields";
 import type { TelegramTopicConfigValues } from "../telegram-topic-overrides";
 import type { GroupManagerGroupInfo } from "../hooks/use-channel-detail";
@@ -21,8 +22,12 @@ interface ChannelGroupsTabProps {
 export function ChannelGroupsTab({ instance, onUpdate, listManagerGroups }: ChannelGroupsTabProps) {
   const { t } = useTranslation("channels");
   const config = (instance.config ?? {}) as Record<string, unknown>;
+  const isWhatsApp = instance.channel_type === "whatsapp";
   const [groups, setGroups] = useState<Record<string, GroupConfigWithTopics>>(
     (config.groups as Record<string, GroupConfigWithTopics>) ?? {},
+  );
+  const [waGroups, setWaGroups] = useState<Record<string, WhatsAppGroupConfigValues>>(
+    (config.groups as Record<string, WhatsAppGroupConfigValues>) ?? {},
   );
   const [saving, setSaving] = useState(false);
   const [knownGroups, setKnownGroups] = useState<GroupManagerGroupInfo[]>([]);
@@ -37,8 +42,9 @@ export function ChannelGroupsTab({ instance, onUpdate, listManagerGroups }: Chan
   useEffect(() => { loadKnownGroups(); }, [loadKnownGroups]);
 
   const handleSave = async () => {
-    const hasGroups = Object.keys(groups).length > 0;
-    const updatedConfig = { ...config, groups: hasGroups ? groups : undefined };
+    const activeGroups = isWhatsApp ? waGroups : groups;
+    const hasGroups = Object.keys(activeGroups).length > 0;
+    const updatedConfig = { ...config, groups: hasGroups ? activeGroups : undefined };
     // Clean undefined entries
     const cleanConfig = Object.fromEntries(
       Object.entries(updatedConfig).filter(([, v]) => v !== undefined),
@@ -55,7 +61,11 @@ export function ChannelGroupsTab({ instance, onUpdate, listManagerGroups }: Chan
 
   return (
     <div className="space-y-6">
-      <TelegramGroupOverrides groups={groups} onChange={(g) => setGroups(g)} knownGroups={knownGroups} />
+      {isWhatsApp ? (
+        <WhatsAppGroupOverrides groups={waGroups} onChange={(g) => setWaGroups(g)} knownGroups={knownGroups} />
+      ) : (
+        <TelegramGroupOverrides groups={groups} onChange={(g) => setGroups(g)} knownGroups={knownGroups} />
+      )}
 
       <div className="flex items-center justify-end gap-2">
         <Button onClick={handleSave} disabled={saving}>
