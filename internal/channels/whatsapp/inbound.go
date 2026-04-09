@@ -100,9 +100,13 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 	if peerKind == "group" && c.config.RequireMention != nil && *c.config.RequireMention {
 		if !c.isMentioned(evt) && !c.isReplyToBot(evt) {
 			// Not mentioned — record for context and skip.
-			senderLabel := evt.Info.PushName
-			if senderLabel == "" {
-				senderLabel = senderID
+			// Use "Name (phone)" format for stable identity in group history.
+			senderLabel := senderID
+			if phone, err := types.ParseJID(senderID); err == nil {
+				senderLabel = phone.User
+			}
+			if evt.Info.PushName != "" {
+				senderLabel = fmt.Sprintf("%s (%s)", evt.Info.PushName, senderLabel)
 			}
 			c.GroupHistory().Record(chatID, channels.HistoryEntry{
 				Sender:    senderLabel,
@@ -145,15 +149,25 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		}
 	}
 
-	// Annotate with sender identity.
-	if senderName := metadata["user_name"]; senderName != "" {
-		content = fmt.Sprintf("[From: %s]\n%s", senderName, content)
+	// Extract stable phone number for sender annotation.
+	// senderID is already non-AD (e.g. "1234567890@s.whatsapp.net"), extract the phone part.
+	senderPhone := senderID
+	if parsed, err := types.ParseJID(senderID); err == nil {
+		senderPhone = parsed.User // just the phone number
 	}
 
-	// Collect contact.
+	// Annotate with sender identity — include phone number for stable disambiguation.
+	senderName := metadata["user_name"]
+	if senderName != "" {
+		content = fmt.Sprintf("[From: %s (%s)]\n%s", senderName, senderPhone, content)
+	} else {
+		content = fmt.Sprintf("[From: %s]\n%s", senderPhone, content)
+	}
+
+	// Collect contact with stable non-AD sender ID.
 	if cc := c.ContactCollector(); cc != nil {
 		cc.EnsureContact(ctx, c.Type(), c.Name(), senderID, senderID,
-			metadata["user_name"], "", peerKind, "user", "", "")
+			senderName, "", peerKind, "user", "", "")
 	}
 
 	// Typing indicator.
