@@ -34,8 +34,20 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 	// WhatsApp uses dual identity: phone JID (@s.whatsapp.net) and LID (@lid).
 	// Groups may use LID addressing. Normalize to phone JID for consistent
 	// policy checks, pairing lookups, allowlists, and contact collection.
-	if evt.Info.AddressingMode == types.AddressingModeLID && !evt.Info.SenderAlt.IsEmpty() {
-		senderJID = evt.Info.SenderAlt
+	if evt.Info.AddressingMode == types.AddressingModeLID {
+		if !evt.Info.SenderAlt.IsEmpty() {
+			senderJID = evt.Info.SenderAlt
+		} else {
+			// SenderAlt may be empty for the bot's own echoed messages.
+			// Fall back to the bot's known phone JID if the sender is us.
+			c.lastQRMu.RLock()
+			myJID := c.myJID
+			myLID := c.myLID
+			c.lastQRMu.RUnlock()
+			if !myLID.IsEmpty() && senderJID.User == myLID.User && !myJID.IsEmpty() {
+				senderJID = myJID
+			}
+		}
 	}
 
 	// Use non-AD JID (strips device suffix) for consistent allowlist matching.
