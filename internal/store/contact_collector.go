@@ -59,3 +59,8 @@ func (c *ContactCollector) EnsureContact(ctx context.Context, channelType, chann
 func (c *ContactCollector) ResolveTenantUserID(ctx context.Context, channelType, senderID string) (string, error) {
 	return c.store.ResolveTenantUserID(ctx, channelType, senderID)
 }
+
+// ListContacts delegates to the underlying ContactStore.
+func (c *ContactCollector) ListContacts(ctx context.Context, opts ContactListOpts) ([]ChannelContact, error) {
+	return c.store.ListContacts(ctx, opts)
+}

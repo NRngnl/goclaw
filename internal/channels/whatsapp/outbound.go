@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/channels"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // Send delivers an outbound message to WhatsApp via whatsmeow.
@@ -58,10 +60,45 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	// Send text (chunked if exceeding limit).
 	if msg.Content != "" {
 		formatted := markdownToWhatsApp(msg.Content)
-		chunks := chunkText(formatted, maxMessageLen)
+
+		// Resolve @mentions only if text contains @.
+		var wireText string
+		var mentionJIDs []string
+		if strings.ContainsRune(formatted, '@') {
+			contacts := c.loadContactsForMentions()
+			wireText, mentionJIDs = resolveMentions(formatted, contacts)
+		} else {
+			wireText = formatted
+		}
+
+		chunks := chunkText(wireText, maxMessageLen)
 		for _, chunk := range chunks {
-			waMsg := &waE2E.Message{
-				Conversation: proto.String(chunk),
+			var waMsg *waE2E.Message
+			// Only attach MentionedJID to chunks that actually contain @phone references.
+			if len(mentionJIDs) > 0 && strings.ContainsRune(chunk, '@') {
+				// Filter JIDs to only those whose phone number appears in this chunk.
+				var chunkJIDs []string
+				for _, jid := range mentionJIDs {
+					phone := strings.SplitN(jid, "@", 2)[0]
+					if strings.Contains(chunk, "@"+phone) {
+						chunkJIDs = append(chunkJIDs, jid)
+					}
+				}
+				if len(chunkJIDs) > 0 {
+					waMsg = &waE2E.Message{
+						ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+							Text: proto.String(chunk),
+							ContextInfo: &waE2E.ContextInfo{
+								MentionedJID: chunkJIDs,
+							},
+						},
+					}
+				}
+			}
+			if waMsg == nil {
+				waMsg = &waE2E.Message{
+					Conversation: proto.String(chunk),
+				}
 			}
 			if _, err := c.client.SendMessage(c.ctx, chatJID, waMsg); err != nil {
 				return fmt.Errorf("send whatsapp message: %w", err)
@@ -78,6 +115,51 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	go c.sendPresence(chatJID, types.ChatPresencePaused)
 
 	return nil
+}
+
+// loadContactsForMentions fetches known contacts for this channel instance
+// and builds a list for mention resolution.
+func (c *Channel) loadContactsForMentions() []contactEntry {
+	cc := c.ContactCollector()
+	if cc == nil {
+		return nil
+	}
+
+	contacts, err := cc.ListContacts(c.ctx, store.ContactListOpts{
+		ChannelType: string(channels.TypeWhatsApp),
+		ContactType: "user",
+		Limit:       1000,
+	})
+	if err != nil {
+		slog.Debug("whatsapp: failed to load contacts for mentions", "error", err)
+		return nil
+	}
+
+	instanceName := c.Name()
+	var entries []contactEntry
+	for _, ct := range contacts {
+		// Filter by this channel instance.
+		if ct.ChannelInstance != nil && *ct.ChannelInstance != instanceName {
+			continue
+		}
+		if ct.DisplayName == nil || *ct.DisplayName == "" {
+			continue
+		}
+		// Extract phone number from sender_id (e.g., "1234567890@s.whatsapp.net" → "1234567890").
+		phone := ct.SenderID
+		if idx := strings.IndexByte(phone, '@'); idx > 0 {
+			phone = phone[:idx]
+		}
+		if phone == "" || !isDigits(phone) {
+			continue // skip non-phone JIDs (groups, LIDs without phone)
+		}
+		entries = append(entries, contactEntry{
+			displayName: *ct.DisplayName,
+			phone:       phone,
+			jid:         ct.SenderID,
+		})
+	}
+	return entries
 }
 
 // buildMediaMessage uploads media to WhatsApp and returns the message proto.
