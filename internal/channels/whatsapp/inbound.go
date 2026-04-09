@@ -38,7 +38,10 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		senderJID = evt.Info.SenderAlt
 	}
 
-	senderID := senderJID.String()
+	// Use non-AD JID (strips device suffix) for consistent allowlist matching.
+	// Device suffix changes on reconnect, so "1234567890@s.whatsapp.net" is stable
+	// while "1234567890:65@s.whatsapp.net" is not.
+	senderID := senderJID.ToNonAD().String()
 	chatID := chatJID.String()
 
 	peerKind := "direct"
