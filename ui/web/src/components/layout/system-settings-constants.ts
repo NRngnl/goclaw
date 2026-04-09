@@ -1,9 +1,11 @@
-/** Curated 1536-dimension embedding models per provider type. */
+/** Curated embedding models per provider type. */
 export const EMBEDDING_MODELS: Record<string, { id: string; name: string }[]> = {
   openai_compat: [
+    { id: "bge-m3", name: "bge-m3 (1024d)" },
     { id: "text-embedding-3-small", name: "text-embedding-3-small (1536d)" },
-    { id: "text-embedding-3-large", name: "text-embedding-3-large (3072d → 1536 via dimensions)" },
+    { id: "text-embedding-3-large", name: "text-embedding-3-large (3072d → 1024 via dimensions)" },
     { id: "text-embedding-ada-002", name: "text-embedding-ada-002 (1536d)" },
+    { id: "nomic-embed-text", name: "nomic-embed-text (768d)" },
   ],
   openrouter: [
     { id: "openai/text-embedding-3-small", name: "openai/text-embedding-3-small (1536d)" },

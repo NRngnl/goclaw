@@ -96,8 +96,11 @@ func setupToolRegistry(
 			opts = append(opts, browser.WithRemoteURL(cfg.Tools.Browser.RemoteURL))
 			slog.Info("browser tool enabled", "remote", cfg.Tools.Browser.RemoteURL)
 		} else {
+			if cfg.Tools.Browser.Bin != "" {
+				opts = append(opts, browser.WithBrowserBin(cfg.Tools.Browser.Bin))
+			}
 			opts = append(opts, browser.WithHeadless(cfg.Tools.Browser.Headless))
-			slog.Info("browser tool enabled", "headless", cfg.Tools.Browser.Headless)
+			slog.Info("browser tool enabled", "headless", cfg.Tools.Browser.Headless, "bin", cfg.Tools.Browser.Bin)
 		}
 		if cfg.Tools.Browser.ActionTimeoutMs > 0 {
 			opts = append(opts, browser.WithActionTimeout(time.Duration(cfg.Tools.Browser.ActionTimeoutMs)*time.Millisecond))

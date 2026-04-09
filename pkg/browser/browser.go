@@ -23,6 +23,7 @@ type Manager struct {
 	pageTenants map[string]string           // targetID → tenantID (for filtering)
 	pageLastUsed map[string]time.Time       // targetID → last access time
 	headless      bool
+	browserBin    string        // path to Chrome/Chromium binary; empty = auto-detect/download
 	remoteURL     string        // CDP endpoint for remote Chrome (sidecar); skips local launcher
 	actionTimeout time.Duration // per-action context timeout (default 30s)
 	idleTimeout   time.Duration // auto-close pages idle longer than this (default 10m, 0=disabled)
@@ -37,6 +38,12 @@ type Option func(*Manager)
 // WithHeadless sets headless mode (default false).
 func WithHeadless(h bool) Option {
 	return func(m *Manager) { m.headless = h }
+}
+
+// WithBrowserBin sets the path to the Chrome/Chromium binary.
+// When empty (default), rod auto-detects or downloads Chrome.
+func WithBrowserBin(path string) Option {
+	return func(m *Manager) { m.browserBin = path }
 }
 
 // WithRemoteURL sets a remote CDP endpoint (e.g. "ws://chrome:9222").
@@ -129,7 +136,13 @@ func (m *Manager) Start(ctx context.Context) error {
 		l := launcher.New().
 			Context(launchCtx).
 			Leakless(true).
-			Headless(m.headless).
+			Headless(m.headless)
+
+		if m.browserBin != "" {
+			l = l.Bin(m.browserBin)
+		}
+
+		l = l.
 			Set("disable-gpu").
 			Set("no-first-run").
 			Set("no-default-browser-check").

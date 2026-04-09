@@ -60,7 +60,7 @@ export function ProviderEmbeddingSection({
 
           <div className="space-y-2">
             <Label>{t("embedding.dimensions")}</Label>
-            <p className="text-sm text-muted-foreground">1536</p>
+            <p className="text-sm text-muted-foreground">1024</p>
             <p className="text-xs text-muted-foreground">{t("embedding.dimensionsHint")}</p>
           </div>
 

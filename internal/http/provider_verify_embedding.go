@@ -90,7 +90,7 @@ func (h *ProvidersHandler) handleVerifyEmbedding(w http.ResponseWriter, r *http.
 		dims = len(vectors[0])
 	}
 	result := map[string]any{"valid": true, "dimensions": dims}
-	if dims > 0 && dims != 1536 {
+	if dims > 0 && dims != store.RequiredMemoryEmbeddingDimensions {
 		result["dimension_mismatch"] = true
 	}
 	writeJSON(w, http.StatusOK, result)
