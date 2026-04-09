@@ -33,6 +33,10 @@ func init() {
 
 // Channel connects directly to WhatsApp via go.mau.fi/whatsmeow.
 // Auth state is stored in PostgreSQL (standard) or SQLite (desktop).
+//
+// Implements channels.ReactionChannel for emoji reactions on agent status changes.
+var _ channels.ReactionChannel = (*Channel)(nil)
+
 type Channel struct {
 	*channels.BaseChannel
 	client    *whatsmeow.Client

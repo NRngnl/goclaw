@@ -18,6 +18,7 @@ type whatsappInstanceConfig struct {
 	RequireMention *bool    `json:"require_mention,omitempty"`
 	HistoryLimit   int      `json:"history_limit,omitempty"`
 	AllowFrom      []string `json:"allow_from,omitempty"`
+	ReactionLevel  string   `json:"reaction_level,omitempty"`
 	BlockReply     *bool    `json:"block_reply,omitempty"`
 }
 
@@ -57,6 +58,7 @@ func FactoryWithDB(db *sql.DB, pendingStore store.PendingMessageStore, dialect s
 			GroupPolicy:    ic.GroupPolicy,
 			RequireMention: ic.RequireMention,
 			HistoryLimit:   ic.HistoryLimit,
+			ReactionLevel:  ic.ReactionLevel,
 			BlockReply:     ic.BlockReply,
 		}
 		// DB instances default to "pairing" for groups (secure by default).
