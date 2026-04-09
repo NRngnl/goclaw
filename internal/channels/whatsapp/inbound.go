@@ -87,7 +87,7 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		historyLimit = channels.DefaultGroupHistoryLimit
 	}
 	if peerKind == "group" && c.config.RequireMention != nil && *c.config.RequireMention {
-		if !c.isMentioned(evt) {
+		if !c.isMentioned(evt) && !c.isReplyToBot(evt) {
 			// Not mentioned — record for context and skip.
 			senderLabel := evt.Info.PushName
 			if senderLabel == "" {
@@ -264,6 +264,97 @@ func (c *Channel) isMentioned(evt *events.Message) bool {
 				}
 			}
 		}
+	}
+	return false
+}
+
+// getReplyContextInfo extracts ContextInfo from any message type that carries it.
+// WhatsApp embeds ContextInfo in text, image, video, audio, document, and sticker messages.
+func getReplyContextInfo(msg *waE2E.Message) *waE2E.ContextInfo {
+	if msg == nil {
+		return nil
+	}
+	if ext := msg.GetExtendedTextMessage(); ext != nil {
+		if ci := ext.GetContextInfo(); ci != nil {
+			return ci
+		}
+	}
+	if img := msg.GetImageMessage(); img != nil {
+		if ci := img.GetContextInfo(); ci != nil {
+			return ci
+		}
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		if ci := vid.GetContextInfo(); ci != nil {
+			return ci
+		}
+	}
+	if aud := msg.GetAudioMessage(); aud != nil {
+		if ci := aud.GetContextInfo(); ci != nil {
+			return ci
+		}
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		if ci := doc.GetContextInfo(); ci != nil {
+			return ci
+		}
+	}
+	if stk := msg.GetStickerMessage(); stk != nil {
+		if ci := stk.GetContextInfo(); ci != nil {
+			return ci
+		}
+	}
+	return nil
+}
+
+// isReplyToBot checks if the message is a quote-reply to the bot's own message.
+// Treats reply-to-bot as an implicit mention in groups with require_mention.
+//
+// WhatsApp ContextInfo behavior for quoted messages in groups:
+//   - Quoting another user's message: Participant = that user's JID
+//   - Quoting your OWN message: Participant is empty, StanzaID is set
+//
+// So empty participant + non-empty stanzaID = reply to bot's own message.
+func (c *Channel) isReplyToBot(evt *events.Message) bool {
+	ci := getReplyContextInfo(evt.Message)
+	if ci == nil {
+		return false
+	}
+
+	stanzaID := ci.GetStanzaID()
+	participant := ci.GetParticipant()
+
+	// No reply context at all.
+	if stanzaID == "" {
+		return false
+	}
+
+	// Empty participant with a stanza ID means the quoted message is from
+	// the current account (the bot). WhatsApp omits participant for self-quotes.
+	if participant == "" {
+		return true
+	}
+
+	// Participant is set — check if it matches the bot's identity.
+	quoted, err := types.ParseJID(participant)
+	if err != nil {
+		return false
+	}
+
+	c.lastQRMu.RLock()
+	myJID := c.myJID
+	myLID := c.myLID
+	c.lastQRMu.RUnlock()
+
+	if myJID.IsEmpty() && myLID.IsEmpty() {
+		return false // fail closed: unknown identity = not a reply to bot
+	}
+
+	if !myJID.IsEmpty() && quoted.User == myJID.User {
+		return true
+	}
+	if !myLID.IsEmpty() && quoted.User == myLID.User {
+		return true
 	}
 	return false
 }
