@@ -7,14 +7,23 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types/events"
 
 	"github.com/nextlevelbuilder/goclaw/internal/channels/media"
 )
 
-// downloadMedia downloads media attachments from a WhatsApp message.
+// downloadMedia downloads media attachments from a WhatsApp event message.
 func (c *Channel) downloadMedia(evt *events.Message) []media.MediaInfo {
-	msg := evt.Message
+	if evt.Message == nil {
+		return nil
+	}
+	return c.downloadMediaFromMsg(evt.Message)
+}
+
+// downloadMediaFromMsg downloads media from a raw protobuf Message.
+// Used for both direct messages and quoted (replied-to) messages.
+func (c *Channel) downloadMediaFromMsg(msg *waE2E.Message) []media.MediaInfo {
 	if msg == nil {
 		return nil
 	}

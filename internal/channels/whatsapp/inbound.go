@@ -74,6 +74,17 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 	var mediaList []media.MediaInfo
 	mediaList = c.downloadMedia(evt)
 
+	// Download media from quoted (replied-to) message so the agent can see it.
+	if ci := getReplyContextInfo(evt.Message); ci != nil {
+		if qm := ci.GetQuotedMessage(); qm != nil {
+			quotedMedia := c.downloadMediaFromMsg(qm)
+			if len(quotedMedia) > 0 {
+				// Prepend quoted media (marked as from reply) before the current message's media.
+				mediaList = append(quotedMedia, mediaList...)
+			}
+		}
+	}
+
 	if content == "" && len(mediaList) == 0 {
 		return
 	}
@@ -230,11 +241,29 @@ func extractQuotedText(msg *waE2E.Message) string {
 	if ext := msg.GetExtendedTextMessage(); ext != nil {
 		return ext.GetText()
 	}
-	if img := msg.GetImageMessage(); img != nil && img.GetCaption() != "" {
-		return img.GetCaption()
+	if img := msg.GetImageMessage(); img != nil {
+		if img.GetCaption() != "" {
+			return "[image] " + img.GetCaption()
+		}
+		return "[image]"
 	}
-	if vid := msg.GetVideoMessage(); vid != nil && vid.GetCaption() != "" {
-		return vid.GetCaption()
+	if vid := msg.GetVideoMessage(); vid != nil {
+		if vid.GetCaption() != "" {
+			return "[video] " + vid.GetCaption()
+		}
+		return "[video]"
+	}
+	if msg.GetAudioMessage() != nil {
+		return "[audio]"
+	}
+	if msg.GetStickerMessage() != nil {
+		return "[sticker]"
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		if name := doc.GetFileName(); name != "" {
+			return "[document: " + name + "]"
+		}
+		return "[document]"
 	}
 	return ""
 }
