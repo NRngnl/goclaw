@@ -129,3 +129,135 @@ func TestIsMentioned(t *testing.T) {
 		})
 	}
 }
+
+func TestIsReplyToBot(t *testing.T) {
+	tests := []struct {
+		name string
+		myJID string
+		myLID string
+		evt  *events.Message
+		want bool
+	}{
+		{
+			name:  "self-quote — empty participant with stanzaID (real WhatsApp behavior)",
+			myJID: "1234567890@s.whatsapp.net",
+			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("replying"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID: proto.String("3EB0ABCDEF123456"),
+				},
+			}}},
+			want: true,
+		},
+		{
+			name:  "reply to bot via phone JID participant",
+			myJID: "1234567890@s.whatsapp.net",
+			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("replying"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID:    proto.String("3EB0ABCDEF123456"),
+					Participant: proto.String("1234567890@s.whatsapp.net"),
+				},
+			}}},
+			want: true,
+		},
+		{
+			name:  "reply to bot via phone JID with device suffix",
+			myJID: "1234567890@s.whatsapp.net",
+			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("replying"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID:    proto.String("3EB0ABCDEF123456"),
+					Participant: proto.String("1234567890:42@s.whatsapp.net"),
+				},
+			}}},
+			want: true,
+		},
+		{
+			name:  "reply to bot via LID",
+			myLID: "9876543210@lid",
+			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("replying"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID:    proto.String("3EB0ABCDEF123456"),
+					Participant: proto.String("9876543210@lid"),
+				},
+			}}},
+			want: true,
+		},
+		{
+			name:  "reply to another user — not bot",
+			myJID: "1234567890@s.whatsapp.net",
+			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("replying"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID:    proto.String("3EB0ABCDEF123456"),
+					Participant: proto.String("9999999999@s.whatsapp.net"),
+				},
+			}}},
+			want: false,
+		},
+		{
+			name:  "no reply context — plain message",
+			myJID: "1234567890@s.whatsapp.net",
+			evt: &events.Message{Message: &waE2E.Message{
+				Conversation: proto.String("hello"),
+			}},
+			want: false,
+		},
+		{
+			name:  "unknown identity — fail closed",
+			myJID: "",
+			myLID: "",
+			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("replying"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID:    proto.String("3EB0ABCDEF123456"),
+					Participant: proto.String("1234567890@s.whatsapp.net"),
+				},
+			}}},
+			want: false,
+		},
+		{
+			name:  "image reply — self-quote (empty participant)",
+			myJID: "1234567890@s.whatsapp.net",
+			evt: &events.Message{Message: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+				Caption: proto.String("image reply"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID: proto.String("3EB0ABCDEF123456"),
+				},
+			}}},
+			want: true,
+		},
+		{
+			name:  "image reply to bot via LID participant",
+			myLID: "9876543210@lid",
+			evt: &events.Message{Message: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+				Caption: proto.String("image reply"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID:    proto.String("3EB0ABCDEF123456"),
+					Participant: proto.String("9876543210:5@lid"),
+				},
+			}}},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := &Channel{}
+			if tt.myJID != "" {
+				jid, _ := types.ParseJID(tt.myJID)
+				ch.myJID = jid
+			}
+			if tt.myLID != "" {
+				lid, _ := types.ParseJID(tt.myLID)
+				ch.myLID = lid
+			}
+			got := ch.isReplyToBot(tt.evt)
+			if got != tt.want {
+				t.Errorf("isReplyToBot() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
