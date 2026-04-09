@@ -353,11 +353,11 @@ func getReplyContextInfo(msg *waE2E.Message) *waE2E.ContextInfo {
 // isReplyToBot checks if the message is a quote-reply to the bot's own message.
 // Treats reply-to-bot as an implicit mention in groups with require_mention.
 //
-// WhatsApp ContextInfo behavior for quoted messages in groups:
-//   - Quoting another user's message: Participant = that user's JID
-//   - Quoting your OWN message: Participant is empty, StanzaID is set
-//
-// So empty participant + non-empty stanzaID = reply to bot's own message.
+// Detection strategy:
+//  1. If participant is set → check if it matches bot's JID/LID
+//  2. If participant is empty → check stanzaID against sentMessages cache
+//     (WhatsApp omits participant for ALL quotes in some addressing modes,
+//     not just self-quotes, so we cannot assume empty = self)
 func (c *Channel) isReplyToBot(evt *events.Message) bool {
 	ci := getReplyContextInfo(evt.Message)
 	if ci == nil {
@@ -367,37 +367,35 @@ func (c *Channel) isReplyToBot(evt *events.Message) bool {
 	stanzaID := ci.GetStanzaID()
 	participant := ci.GetParticipant()
 
-	// No reply context at all.
 	if stanzaID == "" {
 		return false
 	}
 
-	// Empty participant with a stanza ID means the quoted message is from
-	// the current account (the bot). WhatsApp omits participant for self-quotes.
-	if participant == "" {
-		return true
-	}
-
 	// Participant is set — check if it matches the bot's identity.
-	quoted, err := types.ParseJID(participant)
-	if err != nil {
+	if participant != "" {
+		quoted, err := types.ParseJID(participant)
+		if err != nil {
+			return false
+		}
+
+		c.lastQRMu.RLock()
+		myJID := c.myJID
+		myLID := c.myLID
+		c.lastQRMu.RUnlock()
+
+		if myJID.IsEmpty() && myLID.IsEmpty() {
+			return false
+		}
+		if !myJID.IsEmpty() && quoted.User == myJID.User {
+			return true
+		}
+		if !myLID.IsEmpty() && quoted.User == myLID.User {
+			return true
+		}
 		return false
 	}
 
-	c.lastQRMu.RLock()
-	myJID := c.myJID
-	myLID := c.myLID
-	c.lastQRMu.RUnlock()
-
-	if myJID.IsEmpty() && myLID.IsEmpty() {
-		return false // fail closed: unknown identity = not a reply to bot
-	}
-
-	if !myJID.IsEmpty() && quoted.User == myJID.User {
-		return true
-	}
-	if !myLID.IsEmpty() && quoted.User == myLID.User {
-		return true
-	}
-	return false
+	// Participant is empty — check if stanzaID is one we sent.
+	_, isBotMsg := c.sentMessages.Load(stanzaID)
+	return isBotMsg
 }

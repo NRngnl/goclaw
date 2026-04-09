@@ -47,9 +47,11 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 				return fmt.Errorf("build media message: %w", buildErr)
 			}
 
-			if _, sendErr := c.client.SendMessage(c.ctx, chatJID, waMsg); sendErr != nil {
+			resp, sendErr := c.client.SendMessage(c.ctx, chatJID, waMsg)
+			if sendErr != nil {
 				return fmt.Errorf("send whatsapp media: %w", sendErr)
 			}
+			c.trackSentMessage(string(resp.ID))
 		}
 		// Skip text if caption was used on first media.
 		if msg.Media[0].Caption == "" && msg.Content != "" {
@@ -100,9 +102,11 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 					Conversation: proto.String(chunk),
 				}
 			}
-			if _, err := c.client.SendMessage(c.ctx, chatJID, waMsg); err != nil {
+			resp, err := c.client.SendMessage(c.ctx, chatJID, waMsg)
+			if err != nil {
 				return fmt.Errorf("send whatsapp message: %w", err)
 			}
+			c.trackSentMessage(string(resp.ID))
 		}
 	}
 
@@ -115,6 +119,27 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	go c.sendPresence(chatJID, types.ChatPresencePaused)
 
 	return nil
+}
+
+// trackSentMessage stores a sent message ID for reply-to-bot detection.
+// Entries auto-expire after 24 hours to prevent unbounded growth.
+func (c *Channel) trackSentMessage(id string) {
+	if id == "" {
+		return
+	}
+	c.sentMessages.Store(id, time.Now())
+	// Lazy cleanup: every 100th store, purge entries older than 24h.
+	// Not exact, but prevents unbounded growth without a background goroutine.
+	c.sentMsgCount++
+	if c.sentMsgCount%100 == 0 {
+		cutoff := time.Now().Add(-24 * time.Hour)
+		c.sentMessages.Range(func(key, value any) bool {
+			if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+				c.sentMessages.Delete(key)
+			}
+			return true
+		})
+	}
 }
 
 // loadContactsForMentions fetches known contacts for this channel instance

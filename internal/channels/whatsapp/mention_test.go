@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -132,15 +133,17 @@ func TestIsMentioned(t *testing.T) {
 
 func TestIsReplyToBot(t *testing.T) {
 	tests := []struct {
-		name string
-		myJID string
-		myLID string
-		evt  *events.Message
-		want bool
+		name       string
+		myJID      string
+		myLID      string
+		evt        *events.Message
+		seedSent   []string // message IDs to pre-populate sentMessages
+		want       bool
 	}{
 		{
-			name:  "self-quote — empty participant with stanzaID (real WhatsApp behavior)",
-			myJID: "1234567890@s.whatsapp.net",
+			name:     "empty participant + stanzaID in sentMessages → reply to bot",
+			myJID:    "1234567890@s.whatsapp.net",
+			seedSent: []string{"3EB0ABCDEF123456"},
 			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 				Text: proto.String("replying"),
 				ContextInfo: &waE2E.ContextInfo{
@@ -148,6 +151,17 @@ func TestIsReplyToBot(t *testing.T) {
 				},
 			}}},
 			want: true,
+		},
+		{
+			name:  "empty participant + stanzaID NOT in sentMessages → not reply to bot",
+			myJID: "1234567890@s.whatsapp.net",
+			evt: &events.Message{Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String("replying"),
+				ContextInfo: &waE2E.ContextInfo{
+					StanzaID: proto.String("UNKNOWN_MSG_ID"),
+				},
+			}}},
+			want: false,
 		},
 		{
 			name:  "reply to bot via phone JID participant",
@@ -219,8 +233,9 @@ func TestIsReplyToBot(t *testing.T) {
 			want: false,
 		},
 		{
-			name:  "image reply — self-quote (empty participant)",
-			myJID: "1234567890@s.whatsapp.net",
+			name:     "image reply — self-quote (empty participant, stanzaID in sentMessages)",
+			myJID:    "1234567890@s.whatsapp.net",
+			seedSent: []string{"3EB0ABCDEF123456"},
 			evt: &events.Message{Message: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
 				Caption: proto.String("image reply"),
 				ContextInfo: &waE2E.ContextInfo{
@@ -253,6 +268,9 @@ func TestIsReplyToBot(t *testing.T) {
 			if tt.myLID != "" {
 				lid, _ := types.ParseJID(tt.myLID)
 				ch.myLID = lid
+			}
+			for _, id := range tt.seedSent {
+				ch.sentMessages.Store(id, time.Now())
 			}
 			got := ch.isReplyToBot(tt.evt)
 			if got != tt.want {

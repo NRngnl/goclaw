@@ -57,6 +57,11 @@ type Channel struct {
 	// typingCancel tracks active typing-refresh loops per chatID.
 	typingCancel sync.Map // chatID string → context.CancelFunc
 
+	// sentMessages tracks message IDs sent by the bot for reply-to-bot detection.
+	// Key: message ID string, Value: time.Time (send timestamp). Entries expire after 24h.
+	sentMessages sync.Map // messageID string → time.Time
+	sentMsgCount int      // counter for lazy cleanup trigger
+
 	// reauthMu serializes Reauth() and StartQRFlow() to prevent race when user clicks reauth rapidly.
 	reauthMu sync.Mutex
 	// pairingService, pairingDebounce, approvedGroups, groupHistory are inherited from channels.BaseChannel.
