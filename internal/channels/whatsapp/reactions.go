@@ -3,8 +3,14 @@ package whatsapp
 import (
 	"context"
 	"log/slog"
+	"time"
 
+	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/nextlevelbuilder/goclaw/internal/channels"
 )
 
 // Status-to-emoji mapping for WhatsApp reactions.
@@ -51,7 +57,7 @@ func (c *Channel) ClearReaction(ctx context.Context, chatID string, messageID st
 // sendReaction sends an emoji reaction to a specific message.
 func (c *Channel) sendReaction(ctx context.Context, chatID string, messageID string, emoji string) error {
 	if c.client == nil || !c.client.IsConnected() {
-		return nil // silently skip if not connected
+		return nil
 	}
 
 	chatJID, err := types.ParseJID(chatID)
@@ -59,19 +65,31 @@ func (c *Channel) sendReaction(ctx context.Context, chatID string, messageID str
 		return nil
 	}
 
-	// Use bot's own JID as the sender of the reaction.
-	c.lastQRMu.RLock()
-	myJID := c.myJID
-	c.lastQRMu.RUnlock()
-
-	if myJID.IsEmpty() {
-		return nil
+	// Build the reaction message key.
+	// WhatsApp requires the original sender's JID as participant in group chats.
+	key := &waCommon.MessageKey{
+		FromMe:    proto.Bool(false),
+		ID:        proto.String(messageID),
+		RemoteJID: proto.String(chatJID.String()),
+	}
+	// Set participant from the original sender's JID stored in run metadata.
+	if meta := channels.RunMetadataFromContext(ctx); meta != nil {
+		if senderJID := meta["wa_sender_jid"]; senderJID != "" {
+			key.Participant = proto.String(senderJID)
+		}
 	}
 
-	reactionMsg := c.client.BuildReaction(chatJID, myJID, types.MessageID(messageID), emoji)
+	reactionMsg := &waE2E.Message{
+		ReactionMessage: &waE2E.ReactionMessage{
+			Key:               key,
+			Text:              proto.String(emoji),
+			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+		},
+	}
+
 	_, err = c.client.SendMessage(ctx, chatJID, reactionMsg)
 	if err != nil {
-		slog.Debug("whatsapp: reaction failed", "chat", chatID, "msg", messageID, "emoji", emoji, "error", err)
+		slog.Warn("whatsapp: reaction failed", "chat", chatID, "msg", messageID, "emoji", emoji, "error", err)
 	}
-	return nil // don't propagate reaction errors
+	return nil
 }

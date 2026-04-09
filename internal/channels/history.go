@@ -9,6 +9,7 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -251,17 +252,27 @@ func (ph *PendingHistory) BuildContext(historyKey, currentMessage string, limit 
 		return currentMessage
 	}
 
-	var lines []string
+	// Format history as JSON array for unambiguous message boundaries.
+	// Each entry is a discrete object — prevents LLM from merging messages across senders.
+	type historyItem struct {
+		Sender string `json:"sender"`
+		Time   string `json:"time"`
+		Body   string `json:"body"`
+	}
+	var jsonEntries []string
 	for _, e := range entriesCopy {
 		ts := ""
 		if !e.Timestamp.IsZero() {
-			ts = fmt.Sprintf(" [%s]", e.Timestamp.Format("15:04"))
+			ts = e.Timestamp.Format("15:04")
 		}
-		lines = append(lines, fmt.Sprintf("  %s%s: %s", e.Sender, ts, e.Body))
+		b, _ := json.Marshal(historyItem{Sender: e.Sender, Time: ts, Body: e.Body})
+		jsonEntries = append(jsonEntries, "  "+string(b))
 	}
 
-	return fmt.Sprintf("[Chat messages since your last reply - for context]\n%s\n\n[Your current message]\n%s",
-		strings.Join(lines, "\n"), currentMessage)
+	history := "```json\n[\n" + strings.Join(jsonEntries, ",\n") + "\n]\n```"
+
+	return fmt.Sprintf("[Chat history since your last reply — for context only, do NOT respond to these]\n%s\n\n[Current message — respond to THIS]\n%s",
+		history, currentMessage)
 }
 
 // GetEntries returns a copy of pending entries for a group.

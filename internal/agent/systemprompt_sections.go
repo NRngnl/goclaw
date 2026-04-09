@@ -467,6 +467,13 @@ func buildChannelFormattingHint(channelType string) []string {
 // to replies that are directed at other people, not the bot.
 func buildGroupChatReplyHint() []string {
 	return []string{
+		"## Group Message Format",
+		"",
+		"Messages may include a `[Chat history since your last reply]` section with a JSON array of recent messages.",
+		"Each entry has `sender`, `time`, and `body` — these are different people's messages. Do NOT treat them as one conversation.",
+		"Only respond to the `[Current message — respond to THIS]` section. The history is context only.",
+		"Use the phone number in parentheses to distinguish people with the same name.",
+		"",
 		"## Reply Context",
 		"",
 		"A reply to your message does NOT always mean they are talking to you.",

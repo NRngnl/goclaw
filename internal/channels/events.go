@@ -13,6 +13,18 @@ import (
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
+type ctxKey string
+
+const runMetadataKey ctxKey = "run_metadata"
+
+// RunMetadataFromContext extracts run metadata from context (set by HandleAgentEvent).
+func RunMetadataFromContext(ctx context.Context) map[string]string {
+	if v, ok := ctx.Value(runMetadataKey).(map[string]string); ok {
+		return v
+	}
+	return nil
+}
+
 // HandleAgentEvent routes agent lifecycle events to streaming/reaction channels.
 // Called from the bus event subscriber — must be non-blocking.
 // eventType: "run.started", "chunk", "tool.call", "tool.result", "run.completed", "run.failed", "run.cancelled"
@@ -321,7 +333,10 @@ func (m *Manager) HandleAgentEvent(eventType, runID string, payload any) {
 			status = "done"
 		}
 		if status != "" {
-			if err := reactionCh.OnReactionEvent(ctx, rc.ChatID, rc.MessageID, status); err != nil {
+			// Inject run metadata into context so channel-specific reaction logic
+			// can access platform-specific fields (e.g., wa_sender_jid for WhatsApp).
+			rctx := context.WithValue(ctx, runMetadataKey, rc.Metadata)
+			if err := reactionCh.OnReactionEvent(rctx, rc.ChatID, rc.MessageID, status); err != nil {
 				slog.Debug("reaction event failed", "channel", rc.ChannelName, "status", status, "error", err)
 			}
 		}

@@ -137,6 +137,9 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 	metadata := map[string]string{
 		"message_id": string(evt.Info.ID),
 	}
+	// Store the raw sender JID for reaction participant key (WhatsApp requires
+	// the original sender's JID/LID in the reaction message key).
+	metadata["wa_sender_jid"] = evt.Info.Sender.ToNonAD().String()
 	if evt.Info.PushName != "" {
 		metadata["user_name"] = evt.Info.PushName
 	}
