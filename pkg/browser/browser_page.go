@@ -24,16 +24,23 @@ func (m *Manager) Snapshot(ctx context.Context, targetID string, opts SnapshotOp
 		return nil, fmt.Errorf("get AX tree: %w", err)
 	}
 
+	// Resolve actual targetID — agent may omit it (single-tab mode),
+	// but refs must be stored under the real page ID so act() can find them.
+	resolvedTargetID := targetID
+	if resolvedTargetID == "" {
+		resolvedTargetID = string(page.TargetID)
+	}
+
 	snap := FormatSnapshot(result.Nodes, opts)
 	info, _ := page.Info()
-	snap.TargetID = targetID
+	snap.TargetID = resolvedTargetID
 	if info != nil {
 		snap.URL = info.URL
 		snap.Title = info.Title
 	}
 
-	// Cache refs
-	m.refs.Store(targetID, snap.Refs)
+	// Cache refs under resolved targetID
+	m.refs.Store(resolvedTargetID, snap.Refs)
 
 	return snap, nil
 }

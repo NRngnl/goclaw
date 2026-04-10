@@ -29,6 +29,8 @@ type Manager struct {
 	idleTimeout   time.Duration // auto-close pages idle longer than this (default 10m, 0=disabled)
 	maxPages      int           // max open pages per tenant (default 5)
 	stopReaper    chan struct{} // signal to stop the reaper goroutine
+	lifecycleCtx    context.Context    // long-lived context for browser process — cancelled only on Stop()
+	lifecycleCancel context.CancelFunc // cancels lifecycleCtx
 	logger        *slog.Logger
 }
 
@@ -74,17 +76,20 @@ func WithMaxPages(n int) Option {
 
 // New creates a Manager with options.
 func New(opts ...Option) *Manager {
+	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		refs:          NewRefStore(),
-		pages:         make(map[string]*rod.Page),
-		console:       make(map[string][]ConsoleMessage),
-		tenantCtxs:    make(map[string]*rod.Browser),
-		pageTenants:   make(map[string]string),
-		pageLastUsed:  make(map[string]time.Time),
-		actionTimeout: 30 * time.Second,
-		idleTimeout:   10 * time.Minute,
-		maxPages:      5,
-		logger:        slog.Default(),
+		refs:            NewRefStore(),
+		pages:           make(map[string]*rod.Page),
+		console:         make(map[string][]ConsoleMessage),
+		tenantCtxs:      make(map[string]*rod.Browser),
+		pageTenants:     make(map[string]string),
+		pageLastUsed:    make(map[string]time.Time),
+		actionTimeout:   30 * time.Second,
+		idleTimeout:     10 * time.Minute,
+		maxPages:        5,
+		lifecycleCtx:    ctx,
+		lifecycleCancel: cancel,
+		logger:          slog.Default(),
 	}
 	for _, o := range opts {
 		o(m)
@@ -108,6 +113,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Refuse to start if manager has been stopped.
+	if m.lifecycleCtx.Err() != nil {
+		return fmt.Errorf("browser manager is stopped")
+	}
+
 	// If browser exists, check if connection is still alive
 	if m.browser != nil {
 		if _, err := m.browser.Pages(); err == nil {
@@ -129,8 +139,11 @@ func (m *Manager) Start(ctx context.Context) error {
 		controlURL = u
 		m.logger.Info("connecting to remote Chrome", "cdp", controlURL, "remote", m.remoteURL)
 	} else {
-		// Local Chrome — launch via rod launcher with stability flags
-		launchCtx, launchCancel := context.WithTimeout(ctx, 30*time.Second)
+		// Local Chrome — launch via rod launcher with stability flags.
+		// Use lifecycle context (not tool call ctx): browser outlives individual tool calls,
+		// cancelled only on Manager.Stop(). Prevents leakless guardian from killing Chrome
+		// when a short-lived tool call context expires during launch.
+		launchCtx, launchCancel := context.WithTimeout(m.lifecycleCtx, 30*time.Second)
 		defer launchCancel()
 
 		l := launcher.New().
@@ -163,7 +176,8 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.logger.Info("Chrome launched", "cdp", controlURL, "headless", m.headless, "pid", l.PID())
 	}
 
-	connectCtx, connectCancel := context.WithTimeout(ctx, 15*time.Second)
+	// Connect with a 15s timeout, then restore lifecycle context for long-lived operation.
+	connectCtx, connectCancel := context.WithTimeout(m.lifecycleCtx, 15*time.Second)
 	defer connectCancel()
 
 	b := rod.New().Context(connectCtx).ControlURL(controlURL)
@@ -177,7 +191,8 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("connect to Chrome: %w", err)
 	}
 
-	m.browser = b
+	// Restore lifecycle context so the browser outlives the connect timeout.
+	m.browser = b.Context(m.lifecycleCtx)
 
 	// Start idle-page reaper if configured
 	if m.idleTimeout > 0 && m.stopReaper == nil {
@@ -192,9 +207,11 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) Stop(ctx context.Context) error {
 	// Grab and nil-out stopReaper under the lock, then close outside to avoid
 	// deadlock (reaper goroutine also acquires mu).
+	// Also cancel lifecycle context under the lock to prevent race with Start().
 	m.mu.Lock()
 	ch := m.stopReaper
 	m.stopReaper = nil
+	m.lifecycleCancel() // kills leakless guardian and any in-flight launch/connect
 	m.mu.Unlock()
 	if ch != nil {
 		close(ch)
