@@ -30,7 +30,7 @@ func (m *Manager) reconnectLocked() error {
 		return err
 	}
 
-	b := rod.New().ControlURL(controlURL)
+	b := rod.New().Context(m.lifecycleCtx).ControlURL(controlURL)
 	if err := b.Connect(); err != nil {
 		return err
 	}
@@ -189,10 +189,17 @@ func (m *Manager) getPageAndResolve(ctx context.Context, targetID, ref string) (
 		return nil, nil, err
 	}
 
+	// Use the actual page targetID for ref lookup — the caller may pass empty
+	// targetID (single-tab mode), but refs are stored under the real ID.
+	resolvedTargetID := targetID
+	if resolvedTargetID == "" {
+		resolvedTargetID = string(page.TargetID)
+	}
+
 	// Ensure DOM is enabled for node resolution
 	_ = proto.DOMEnable{}.Call(page)
 
-	el, err := m.resolveElement(page, targetID, NormalizeRef(ref))
+	el, err := m.resolveElement(page, resolvedTargetID, NormalizeRef(ref))
 	if err != nil {
 		return nil, nil, err
 	}
