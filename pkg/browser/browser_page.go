@@ -56,12 +56,17 @@ func (m *Manager) Screenshot(ctx context.Context, targetID string, fullPage bool
 		return nil, err
 	}
 
+	// Scope the page context to the caller's context so screenshots respect
+	// the action timeout. Without this, page uses lifecycleCtx (never cancels)
+	// and fullPage screenshots on large pages can hang indefinitely.
+	scopedPage := page.Context(ctx)
+
 	if fullPage {
-		return page.Screenshot(fullPage, &proto.PageCaptureScreenshot{
+		return scopedPage.Screenshot(fullPage, &proto.PageCaptureScreenshot{
 			Format: proto.PageCaptureScreenshotFormatPng,
 		})
 	}
-	return page.Screenshot(false, nil)
+	return scopedPage.Screenshot(false, nil)
 }
 
 // Navigate navigates a page to a URL.
@@ -75,10 +80,11 @@ func (m *Manager) Navigate(ctx context.Context, targetID, url string) error {
 		return err
 	}
 
-	if err := page.Navigate(url); err != nil {
+	scopedPage := page.Context(ctx)
+	if err := scopedPage.Navigate(url); err != nil {
 		return fmt.Errorf("navigate: %w", err)
 	}
-	if err := page.WaitStable(300 * time.Millisecond); err != nil {
+	if err := scopedPage.WaitStable(300 * time.Millisecond); err != nil {
 		return fmt.Errorf("wait stable after navigate: %w", err)
 	}
 	return nil

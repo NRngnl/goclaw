@@ -42,14 +42,15 @@ Actions:
 
 Act kinds: click, type, press, hover, wait, evaluate
 - click: Click element (request: {kind:"click", ref:"e1"})
-- type: Type text (request: {kind:"type", ref:"e1", text:"hello"})
+- type: Type text (request: {kind:"type", ref:"e1", text:"hello", submit:true}). Set submit:true to auto-press Enter after typing.
 - press: Press key (request: {kind:"press", key:"Enter"})
 - hover: Hover element (request: {kind:"hover", ref:"e1"})
 - wait: Wait for condition (request: {kind:"wait", timeMs:1000} or {kind:"wait", text:"loaded"})
 - evaluate: Run JavaScript (request: {kind:"evaluate", fn:"document.title"})
 
 Reading content: open URL → act evaluate (document.body.innerText.substring(0,8000)) → close
-Interacting: open URL → snapshot (get refs) → act click/type (use refs) → act evaluate (read result) → close
+Interacting: open URL → snapshot (get refs) → act type (with submit:true) or act click → act evaluate (read result) → close
+IMPORTANT: After typing into a search box, you MUST either set submit:true or press Enter or click the search button. The page will not update until the form is submitted.
 Note: snapshot shows only interactive elements (buttons/links). To read page TEXT, use act with kind=evaluate.`
 }
 
