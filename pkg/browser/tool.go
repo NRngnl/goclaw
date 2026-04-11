@@ -48,7 +48,9 @@ Act kinds: click, type, press, hover, wait, evaluate
 - wait: Wait for condition (request: {kind:"wait", timeMs:1000} or {kind:"wait", text:"loaded"})
 - evaluate: Run JavaScript (request: {kind:"evaluate", fn:"document.title"})
 
-Workflow: start → open URL → snapshot (get refs) → act (use refs) → snapshot again`
+Reading content: open URL → act evaluate (document.body.innerText.substring(0,8000)) → close
+Interacting: open URL → snapshot (get refs) → act click/type (use refs) → act evaluate (read result) → close
+Note: snapshot shows only interactive elements (buttons/links). To read page TEXT, use act with kind=evaluate.`
 }
 
 func (t *BrowserTool) Parameters() map[string]any {

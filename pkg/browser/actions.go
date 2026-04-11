@@ -158,7 +158,13 @@ func (m *Manager) Evaluate(ctx context.Context, targetID, js string) (string, er
 		return "", err
 	}
 
-	result, err := page.Eval(js)
+	// Rod's page.Eval wraps JS in: function() { return (JS).apply(this, arguments) }
+	// This breaks when JS is an expression (e.g. "document.body.innerText") because
+	// .apply() is called on the expression result (a string), not a function.
+	// Fix: wrap in an arrow function so .apply() calls the function, which returns the value.
+	wrappedJS := fmt.Sprintf("() => { return %s }", js)
+
+	result, err := page.Eval(wrappedJS)
 	if err != nil {
 		return "", fmt.Errorf("evaluate: %w", err)
 	}
