@@ -196,8 +196,8 @@ func (m *Manager) getPageAndResolve(ctx context.Context, targetID, ref string) (
 		resolvedTargetID = string(page.TargetID)
 	}
 
-	// Ensure DOM is enabled for node resolution
-	_ = proto.DOMEnable{}.Call(page)
+	// Ensure DOM is enabled for node resolution — scope to caller's ctx
+	_ = proto.DOMEnable{}.Call(page.Context(ctx))
 
 	el, err := m.resolveElement(page, resolvedTargetID, NormalizeRef(ref))
 	if err != nil {

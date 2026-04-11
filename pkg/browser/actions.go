@@ -17,6 +17,9 @@ func (m *Manager) Click(ctx context.Context, targetID, ref string, opts ClickOpt
 		return err
 	}
 
+	// Scope element to caller's context so click respects action timeout.
+	scopedEl := el.Context(ctx)
+
 	button := proto.InputMouseButtonLeft
 	if opts.Button == "right" {
 		button = proto.InputMouseButtonRight
@@ -29,7 +32,7 @@ func (m *Manager) Click(ctx context.Context, targetID, ref string, opts ClickOpt
 		clickCount = 2
 	}
 
-	return el.Click(button, clickCount)
+	return scopedEl.Click(button, clickCount)
 }
 
 // Type types text into an element by ref.
@@ -39,23 +42,30 @@ func (m *Manager) Type(ctx context.Context, targetID, ref, text string, opts Typ
 		return err
 	}
 
+	// Scope element and page to caller's context so type respects action timeout.
+	scopedPage := page.Context(ctx)
+	scopedEl := el.Context(ctx)
+
 	// Focus the element first
-	_ = el.Click(proto.InputMouseButtonLeft, 1)
+	_ = scopedEl.Click(proto.InputMouseButtonLeft, 1)
 	time.Sleep(50 * time.Millisecond)
 
 	if opts.Slowly {
-		// Type character by character with delay
 		for _, ch := range text {
-			el.MustInput(string(ch))
+			if err := scopedEl.Input(string(ch)); err != nil {
+				return fmt.Errorf("type char: %w", err)
+			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	} else {
-		el.MustInput(text)
+		if err := scopedEl.Input(text); err != nil {
+			return fmt.Errorf("type text: %w", err)
+		}
 	}
 
 	if opts.Submit {
 		time.Sleep(50 * time.Millisecond)
-		_ = page.Keyboard.Press(input.Enter)
+		_ = scopedPage.Keyboard.Press(input.Enter)
 	}
 
 	return nil
@@ -72,7 +82,7 @@ func (m *Manager) Press(ctx context.Context, targetID, key string) error {
 	}
 
 	k := mapKey(key)
-	return page.Keyboard.Press(k)
+	return page.Context(ctx).Keyboard.Press(k)
 }
 
 // Hover hovers over an element by ref.
@@ -82,7 +92,7 @@ func (m *Manager) Hover(ctx context.Context, targetID, ref string) error {
 		return err
 	}
 
-	return el.Hover()
+	return el.Context(ctx).Hover()
 }
 
 // Wait waits for a condition on a page.
@@ -164,7 +174,8 @@ func (m *Manager) Evaluate(ctx context.Context, targetID, js string) (string, er
 	// Fix: wrap in an arrow function so .apply() calls the function, which returns the value.
 	wrappedJS := fmt.Sprintf("() => { return %s }", js)
 
-	result, err := page.Eval(wrappedJS)
+	// Scope to caller's context so evaluate respects the action timeout.
+	result, err := page.Context(ctx).Eval(wrappedJS)
 	if err != nil {
 		return "", fmt.Errorf("evaluate: %w", err)
 	}
