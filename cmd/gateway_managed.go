@@ -539,7 +539,16 @@ func wireExtras(
 
 	// V3 evolution: daily suggestion engine + weekly evaluation cron (background goroutine).
 	if stores.EvolutionMetrics != nil && stores.EvolutionSuggestions != nil {
-		sugEngine := agent.NewSuggestionEngine(stores.EvolutionMetrics, stores.EvolutionSuggestions)
+		var sugOpts []agent.SuggestionEngineOption
+		if names := providerReg.List(context.Background()); len(names) > 0 {
+			if p, err := providerReg.Get(context.Background(), names[0]); err == nil {
+				sugOpts = append(sugOpts, agent.WithDraftProvider(p, ""))
+			}
+		}
+		if stores.DB != nil {
+			sugOpts = append(sugOpts, agent.WithSpanSampler(agent.NewSpanSampler(stores.DB)))
+		}
+		sugEngine := agent.NewSuggestionEngine(stores.EvolutionMetrics, stores.EvolutionSuggestions, sugOpts...)
 		go runEvolutionCron(stores, sugEngine)
 	}
 

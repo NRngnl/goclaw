@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -63,13 +64,24 @@ func (r *ToolFailureRule) Evaluate(_ context.Context, _ uuid.UUID, input Analysi
 
 // RepeatedToolRule suggests creating a skill when a tool is called excessively.
 // Triggers: call_count > 100/week for a single tool.
-type RepeatedToolRule struct{}
+// When Provider is set, uses LLM to generate meaningful skill content.
+type RepeatedToolRule struct {
+	Provider providers.Provider // optional: nil = static template only
+	Model    string             // optional: empty = provider default
+	Sampler  ToolSpanSampler    // optional: nil = no samples in LLM prompt
+}
 
 func (r *RepeatedToolRule) Name() string { return "repeated_tool" }
 
-func (r *RepeatedToolRule) Evaluate(_ context.Context, _ uuid.UUID, input AnalysisInput) (*store.EvolutionSuggestion, error) {
+func (r *RepeatedToolRule) Evaluate(ctx context.Context, agentID uuid.UUID, input AnalysisInput) (*store.EvolutionSuggestion, error) {
 	for _, agg := range input.ToolAggs {
 		if agg.CallCount > highToolCallsWeek && agg.SuccessRate > 0.5 {
+			var draft string
+			if r.Provider != nil {
+				draft = GenerateSkillDraftLLM(ctx, r.Provider, r.Model, agg.ToolName, agg, r.Sampler, agentID)
+			} else {
+				draft = GenerateSkillDraft(agg.ToolName, agg.CallCount, agg.SuccessRate)
+			}
 			return &store.EvolutionSuggestion{
 				SuggestionType: store.SuggestSkillAdd,
 				Suggestion:     fmt.Sprintf("Tool %q called %d times this week — consider creating a skill to encapsulate this pattern", agg.ToolName, agg.CallCount),
@@ -77,7 +89,7 @@ func (r *RepeatedToolRule) Evaluate(_ context.Context, _ uuid.UUID, input Analys
 				Parameters: marshalParams(map[string]any{
 					"tool":        agg.ToolName,
 					"call_count":  agg.CallCount,
-					"skill_draft": GenerateSkillDraft(agg.ToolName, agg.CallCount, agg.SuccessRate),
+					"skill_draft": draft,
 				}),
 			}, nil
 		}

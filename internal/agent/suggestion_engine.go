@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -27,22 +28,47 @@ type AnalysisRule interface {
 // SuggestionEngine analyzes agent metrics and generates actionable suggestions.
 // Runs as a periodic cron job. Suggestions require admin review before application.
 type SuggestionEngine struct {
-	metrics     store.EvolutionMetricsStore
-	suggestions store.EvolutionSuggestionStore
-	rules       []AnalysisRule
+	metrics      store.EvolutionMetricsStore
+	suggestions  store.EvolutionSuggestionStore
+	rules        []AnalysisRule
+	repeatedTool *RepeatedToolRule
+}
+
+// SuggestionEngineOption configures optional SuggestionEngine behavior.
+type SuggestionEngineOption func(*SuggestionEngine)
+
+// WithDraftProvider enables LLM-powered skill draft generation.
+func WithDraftProvider(p providers.Provider, model string) SuggestionEngineOption {
+	return func(e *SuggestionEngine) {
+		e.repeatedTool.Provider = p
+		e.repeatedTool.Model = model
+	}
+}
+
+// WithSpanSampler enables historical tool call sampling for richer skill drafts.
+func WithSpanSampler(s ToolSpanSampler) SuggestionEngineOption {
+	return func(e *SuggestionEngine) {
+		e.repeatedTool.Sampler = s
+	}
 }
 
 // NewSuggestionEngine creates a suggestion engine with default rules.
-func NewSuggestionEngine(metrics store.EvolutionMetricsStore, suggestions store.EvolutionSuggestionStore) *SuggestionEngine {
-	return &SuggestionEngine{
+func NewSuggestionEngine(metrics store.EvolutionMetricsStore, suggestions store.EvolutionSuggestionStore, opts ...SuggestionEngineOption) *SuggestionEngine {
+	repeated := &RepeatedToolRule{}
+	e := &SuggestionEngine{
 		metrics:     metrics,
 		suggestions: suggestions,
+		repeatedTool: repeated,
 		rules: []AnalysisRule{
 			&LowRetrievalUsageRule{},
 			&ToolFailureRule{},
-			&RepeatedToolRule{},
+			repeated,
 		},
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // dedupKey uniquely identifies a suggestion by type + metric key (e.g., tool name or source).
