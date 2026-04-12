@@ -65,12 +65,29 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 				})
 			}
 			for _, img := range m.Images {
-				parts = append(parts, map[string]any{
-					"type": "image_url",
-					"image_url": map[string]any{
-						"url": fmt.Sprintf("data:%s;base64,%s", img.MimeType, img.Data),
-					},
-				})
+				var imgURL string
+				if img.URL != "" {
+					imgURL = img.URL
+				} else {
+					imgURL = fmt.Sprintf("data:%s;base64,%s", img.MimeType, img.Data)
+				}
+				// DashScope/Qwen expects "video_url" type for video content with fps param
+				if strings.HasPrefix(img.MimeType, "video/") {
+					parts = append(parts, map[string]any{
+						"type": "video_url",
+						"video_url": map[string]any{
+							"url": imgURL,
+						},
+						"fps": 2,
+					})
+				} else {
+					parts = append(parts, map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url": imgURL,
+						},
+					})
+				}
 			}
 			msg["content"] = parts
 		} else if m.Content != "" || len(m.ToolCalls) == 0 {

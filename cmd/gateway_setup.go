@@ -214,10 +214,14 @@ func setupToolRegistry(
 	if execTool, ok := toolsReg.Get("exec"); ok {
 		if et, ok := execTool.(*tools.ExecTool); ok {
 			et.DenyPaths(dataDir, ".goclaw/")
-			// Allow skills execution: master-tenant skills-store + all tenant-scoped skills-store dirs.
+			// Allow skills execution and video-serve file registration.
+			// skills-store: skill scripts need exec access.
+			// video-serve: video-digest skill runs `video-serve add <path>` with video-serve/ paths as arguments.
 			et.AllowPathExemptions(
 				".goclaw/skills-store/",
+				".goclaw/data/video-serve/",
 				filepath.Join(dataDir, "skills-store")+"/",
+				filepath.Join(dataDir, "video-serve")+"/",
 				filepath.Join(dataDir, "tenants")+"/",
 			)
 			// Harden: block access to internal workspace files via shell commands.
@@ -272,6 +276,11 @@ func setupToolRegistry(
 	}
 	if ed, ok := toolsReg.Get("edit"); ok {
 		if t, ok := ed.(*tools.EditTool); ok {
+			t.DenyPaths(internalDenyPaths...)
+		}
+	}
+	if rv, ok := toolsReg.Get("read_video"); ok {
+		if t, ok := rv.(*tools.ReadVideoTool); ok {
 			t.DenyPaths(internalDenyPaths...)
 		}
 	}

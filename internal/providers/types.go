@@ -107,10 +107,12 @@ type StreamChunk struct {
 	Done     bool   `json:"done,omitempty"`
 }
 
-// ImageContent represents a base64-encoded image for vision-capable models.
+// ImageContent represents an image/video for vision-capable models.
+// Either Data (base64) or URL (https) must be set.
 type ImageContent struct {
-	MimeType string `json:"mime_type"` // e.g. "image/jpeg"
-	Data     string `json:"data"`      // base64-encoded image bytes
+	MimeType string `json:"mime_type"` // e.g. "image/jpeg", "video/mp4"
+	Data     string `json:"data"`      // base64-encoded bytes (mutually exclusive with URL)
+	URL      string `json:"url"`       // https URL for provider to download (mutually exclusive with Data)
 }
 
 // MediaRef is a lightweight reference to a persistently stored media file.
