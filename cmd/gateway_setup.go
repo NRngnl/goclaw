@@ -94,9 +94,12 @@ func setupToolRegistry(
 	// Browser automation tool
 	if cfg.Tools.Browser.Enabled {
 		var opts []browser.Option
+		if cfg.Tools.Browser.Backend != "" {
+			opts = append(opts, browser.WithBackend(browser.Backend(cfg.Tools.Browser.Backend)))
+		}
 		if cfg.Tools.Browser.RemoteURL != "" {
 			opts = append(opts, browser.WithRemoteURL(cfg.Tools.Browser.RemoteURL))
-			slog.Info("browser tool enabled", "remote", cfg.Tools.Browser.RemoteURL)
+			slog.Info("browser tool enabled", "remote", cfg.Tools.Browser.RemoteURL, "backend", cfg.Tools.Browser.Backend)
 		} else {
 			opts = append(opts, browser.WithHeadless(cfg.Tools.Browser.Headless))
 			slog.Info("browser tool enabled", "headless", cfg.Tools.Browser.Headless)
