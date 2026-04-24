@@ -11,6 +11,9 @@ services:
   lightpanda:
     # Official Lightpanda CDP image: https://hub.docker.com/r/lightpanda/browser
     image: lightpanda/browser:latest
+    # Invoke the lightpanda binary explicitly — the image's default entrypoint
+    # isn't `lightpanda`. Verify against image docs if upgrading.
+    command: ["lightpanda", "serve", "--host", "0.0.0.0", "--port", "9222"]
     ports:
       - "127.0.0.1:${LIGHTPANDA_CDP_PORT:-9222}:9222"
     healthcheck:
