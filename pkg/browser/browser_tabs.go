@@ -21,17 +21,19 @@ func (m *Manager) ListTabs(ctx context.Context) ([]TabInfo, error) {
 	tenantID := tenantIDFromCtx(ctx)
 
 	// Lightpanda: no server-side enumeration — return what we're tracking.
+	// Use the cache populated at OpenTab; page.Info() is unreliable upstream
+	// after the initial call.
 	if m.backend == BackendLightpanda {
 		tabs := make([]TabInfo, 0, len(m.pages))
-		for tid, p := range m.pages {
+		for tid := range m.pages {
 			if !m.pageVisibleToTenantLocked(tid, tenantID) {
 				continue
 			}
-			info, err := p.Info()
-			if err != nil || info == nil {
+			if cached, ok := m.pageInfos[tid]; ok {
+				tabs = append(tabs, cached)
 				continue
 			}
-			tabs = append(tabs, TabInfo{TargetID: tid, URL: info.URL, Title: info.Title})
+			tabs = append(tabs, TabInfo{TargetID: tid})
 		}
 		return tabs, nil
 	}
@@ -215,7 +217,12 @@ func (m *Manager) openTabLightpandaLocked(ctx context.Context, tenantID, targetU
 	stopWatchdog()
 
 	info, _ := page.Info()
-	tid := string(tgt.TargetID)
+	// Lightpanda numbers targets per-browser, and each conn is its own browser,
+	// so every conn's first target is "FID-0000000001". Synthesize a globally
+	// unique key for our maps; the upstream targetID is only needed inside this
+	// function (for createTarget / PageFromTarget).
+	m.nextLpTabSeq++
+	tid := fmt.Sprintf("lp-%d", m.nextLpTabSeq)
 	m.pages[tid] = page
 	m.pageConns[tid] = conn
 	m.touchPageLocked(tid)
@@ -224,12 +231,16 @@ func (m *Manager) openTabLightpandaLocked(ctx context.Context, tenantID, targetU
 	}
 	m.setupConsoleListener(page, tid)
 
-	tab := &TabInfo{TargetID: tid, URL: targetURL}
+	tab := TabInfo{TargetID: tid, URL: targetURL}
 	if info != nil {
 		tab.URL = info.URL
 		tab.Title = info.Title
 	}
-	return tab, nil
+	// Cache for ListTabs — page.Info() is unreliable on Lightpanda after the
+	// initial post-open call.
+	m.pageInfos[tid] = tab
+	tabCopy := tab
+	return &tabCopy, nil
 }
 
 // evictOldestIfOverLimitLocked closes the oldest idle page for a tenant if at or over maxPages.
@@ -284,12 +295,16 @@ func (m *Manager) evictOldestIfOverLimitLocked(tenantID string) {
 // server-side (no page.Close() needed). Must be called with mu held.
 func (m *Manager) closeManagedPageLocked(targetID string) {
 	if conn, ok := m.pageConns[targetID]; ok {
+		// Lightpanda: rod.Browser.Close() calls Browser.close which Lightpanda
+		// rejects with UnknownMethod; the WS drops anyway and Lightpanda
+		// auto-cleans the browser. Swallow the error.
 		_ = conn.Close()
 		delete(m.pageConns, targetID)
 	} else if page, ok := m.pages[targetID]; ok {
 		_ = page.Close()
 	}
 	delete(m.pages, targetID)
+	delete(m.pageInfos, targetID)
 	delete(m.console, targetID)
 	delete(m.pageTenants, targetID)
 	delete(m.pageLastUsed, targetID)

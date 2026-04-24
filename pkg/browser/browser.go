@@ -39,6 +39,7 @@ type Manager struct {
 	refs           *RefStore
 	pages          map[string]*rod.Page        // targetID → page
 	pageConns      map[string]*rod.Browser     // lightpanda only: targetID → dedicated CDP conn
+	pageInfos      map[string]TabInfo          // lightpanda only: cached URL/Title (page.Info() is unreliable upstream)
 	console        map[string][]ConsoleMessage // targetID → console messages
 	tenantCtxs     map[string]*rod.Browser     // chrome only: browser scope key → incognito browser context
 	pageTenants    map[string]string           // targetID → browser scope key (for filtering)
@@ -53,6 +54,7 @@ type Manager struct {
 	cookieProvider CookieProvider
 	stopReaper     chan struct{} // signal to stop the reaper goroutine
 	logger         *slog.Logger
+	nextLpTabSeq   uint64 // lightpanda only: monotonic counter for synthetic tab IDs
 }
 
 // Option configures a Manager.
@@ -107,6 +109,7 @@ func New(opts ...Option) *Manager {
 		refs:          NewRefStore(),
 		pages:         make(map[string]*rod.Page),
 		pageConns:     make(map[string]*rod.Browser),
+		pageInfos:     make(map[string]TabInfo),
 		console:       make(map[string][]ConsoleMessage),
 		tenantCtxs:    make(map[string]*rod.Browser),
 		pageTenants:   make(map[string]string),
@@ -154,6 +157,7 @@ func (m *Manager) isRunningLocked() bool {
 func (m *Manager) resetPageMapsLocked() {
 	m.pages = make(map[string]*rod.Page)
 	m.pageConns = make(map[string]*rod.Browser)
+	m.pageInfos = make(map[string]TabInfo)
 	m.console = make(map[string][]ConsoleMessage)
 	m.pageTenants = make(map[string]string)
 	m.pageLastUsed = make(map[string]time.Time)
@@ -336,12 +340,12 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 
 	// Lightpanda: close every per-tab connection. Lightpanda auto-cleans the
-	// browser on disconnect, so no page.Close() is required.
+	// browser on disconnect, so no page.Close() is required. rod.Browser.Close
+	// calls Browser.close which Lightpanda doesn't implement (UnknownMethod);
+	// the WS drops regardless, so swallow the error.
 	if m.backend == BackendLightpanda {
-		for tid, conn := range m.pageConns {
-			if err := conn.Close(); err != nil {
-				m.logger.Warn("lightpanda: failed to close page conn", "targetId", tid, "error", err)
-			}
+		for _, conn := range m.pageConns {
+			_ = conn.Close()
 		}
 		m.cdpURL = ""
 		m.resetPageMapsLocked()
