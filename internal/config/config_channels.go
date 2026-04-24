@@ -523,6 +523,7 @@ type WebFetchPolicyConfig struct {
 // BrowserToolConfig controls the browser automation tool.
 type BrowserToolConfig struct {
 	Enabled           bool   `json:"enabled"`                     // enable the browser tool (default false)
+	Backend           string `json:"backend,omitempty"`           // "chrome" (default) or "lightpanda"; auto-detected from /json/version if empty
 	Headless          bool   `json:"headless,omitempty"`          // run Chrome in headless mode (ignored when RemoteURL is set)
 	RemoteURL         string `json:"remote_url,omitempty"`        // CDP endpoint for remote Chrome sidecar, e.g. "ws://chrome:9222"
 	ActionTimeoutMs   int    `json:"action_timeout_ms,omitempty"` // per-action timeout in ms (default 30000)
