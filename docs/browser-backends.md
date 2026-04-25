@@ -26,7 +26,7 @@ Set `GOCLAW_BROWSER_BACKEND=chrome|lightpanda` to pick the backend explicitly. I
 | Feature | Chrome | Lightpanda | Notes |
 |---|---|---|---|
 | Navigate / reload | ✅ | ✅ | |
-| AX snapshot (`Accessibility.getFullAXTree`) | ✅ | ⚠️ | Lightpanda upstream bug: returns `nodeId` as a JSON number, but CDP spec defines `AXNodeId` as a string. go-rod's typed decoder rejects it. Tracked as a known gap (see below) |
+| AX snapshot (`Accessibility.getFullAXTree`) | ✅ | ✅ | Primary "see the page" path for the agent. Required Lightpanda fix [lightpanda-io/browser#2232](https://github.com/lightpanda-io/browser/pull/2232) (merged 2026-04) |
 | Click / type / hover / press | ✅ | ✅ | |
 | Wait (text / URL / stable) | ✅ | ✅ | |
 | Evaluate JS | ✅ | ✅ | go-rod's `Page.Eval` requires a function form (`() => document.title`), not a bare expression — same on both backends |
@@ -37,13 +37,9 @@ Set `GOCLAW_BROWSER_BACKEND=chrome|lightpanda` to pick the backend explicitly. I
 | List open tabs from server | ✅ | ❌ | Lightpanda: no `/json/list`. Goclaw tracks tabs in its local map (URL/title cached at OpenTab time, since `page.Info()` is also unreliable post-open) |
 | Auto-reconnect on WS drop | ✅ | ❌ | Lightpanda: connection death = that tab is gone server-side. Goclaw drops the tab from the map and surfaces a clear error |
 
-## Known upstream Lightpanda gap
+## Minimum Lightpanda version
 
-**`Accessibility.getFullAXTree` non-conformance.** CDP defines `AXNodeId` as a string; Lightpanda emits it as a JSON number. The `Snapshot` tool action — the agent's primary "see the page" mechanism — fails with `cannot unmarshal number into Go struct field AccessibilityAXNode.nodes.nodeId of type proto.AccessibilityAXNodeID`.
-
-Upstream fix in flight: [lightpanda-io/browser#2232](https://github.com/lightpanda-io/browser/pull/2232).
-
-Exercised by `TestLightpanda_KnownUpstreamGaps` in `tests/integration/browser_lightpanda_test.go` — when Lightpanda merges the fix, that test will start logging "remove this gap test".
+The AX-tree (`Accessibility.getFullAXTree`) snapshot path requires Lightpanda with [lightpanda-io/browser#2232](https://github.com/lightpanda-io/browser/pull/2232) merged. Earlier images return `nodeId` as a JSON number (CDP spec: string), causing the typed go-rod decoder to fail. Use `lightpanda/browser:latest` or any image built after that PR landed.
 
 ## When to choose which
 

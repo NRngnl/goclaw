@@ -91,14 +91,11 @@ func TestLightpanda_SingleTenant_Golden(t *testing.T) {
 	}
 }
 
-// TestLightpanda_KnownUpstreamGaps documents Lightpanda CDP-conformance bugs
-// that goclaw cannot work around without a custom decoder. When Lightpanda
-// fixes the upstream issue, this test starts logging "remove this gap test"
-// and the workaround can be retired.
-//
-// Tracked upstream:
-//   - lightpanda-io/browser#2232 — Accessibility.getFullAXTree nodeId encoding
-func TestLightpanda_KnownUpstreamGaps(t *testing.T) {
+// TestLightpanda_Snapshot_AndEval covers the agent's primary "see the page"
+// workflow: AX-tree snapshot for structure + Eval (function form) for JS
+// access. AX-tree decoding required Lightpanda upstream fix
+// lightpanda-io/browser#2232.
+func TestLightpanda_Snapshot_AndEval(t *testing.T) {
 	m := newLightpandaManager(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -109,21 +106,20 @@ func TestLightpanda_KnownUpstreamGaps(t *testing.T) {
 		t.Fatalf("open tab: %v", err)
 	}
 
-	// Accessibility.getFullAXTree returns nodeId as a JSON number, but the
-	// CDP spec defines AXNodeId as a string. go-rod's typed proto decoder
-	// rejects it. Fix in flight: lightpanda-io/browser#2232.
-	if _, err := m.Snapshot(ctx, tab.TargetID, browser.DefaultSnapshotOptions()); err == nil {
-		t.Log("Lightpanda has fixed AX tree decoding — remove this gap test")
-	} else if !strings.Contains(err.Error(), "AccessibilityAXNodeID") {
-		t.Logf("AX tree failed differently than expected (Lightpanda may have updated): %v", err)
+	snap, err := m.Snapshot(ctx, tab.TargetID, browser.DefaultSnapshotOptions())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if snap.Snapshot == "" {
+		t.Error("expected non-empty AX snapshot text")
+	}
+	if snap.Stats.Refs == 0 {
+		t.Error("expected at least one ref in snapshot")
 	}
 
-	// Sanity check: Runtime.evaluate works on Lightpanda when called with a
-	// proper function form (which is the correct go-rod API usage). Bare
-	// expressions like `document.title` fail on Chrome too.
 	v, err := m.Evaluate(ctx, tab.TargetID, "() => document.title")
 	if err != nil {
-		t.Errorf("Evaluate(function form) should work on Lightpanda: %v", err)
+		t.Errorf("Evaluate(function form): %v", err)
 	}
 	if v == "" {
 		t.Errorf("Evaluate(() => document.title) returned empty value")
