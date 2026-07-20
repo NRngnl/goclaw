@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -61,17 +62,30 @@ func (f *fakeVaultStore) GetDocumentsByIDs(ctx context.Context, tenantID string,
 
 // newVaultReadTestTool builds a VaultReadTool with a temp workspace and a
 // fake store pre-seeded with docs.
+//
+// The tool is given the GLOBAL workspace root, mirroring boot wiring. The
+// returned path is the TENANT-scoped root of the first seeded doc — the
+// directory the tool resolves per request, and therefore where test content
+// must be written. Tests set no slug on the context, so the tenant directory
+// is UUID-named (see config.TenantWorkspace).
 func newVaultReadTestTool(t *testing.T, docs ...*store.VaultDocument) (*VaultReadTool, string) {
 	t.Helper()
-	ws := t.TempDir()
+	base := t.TempDir()
 	fake := &fakeVaultStore{byID: make(map[string]*store.VaultDocument)}
 	for _, d := range docs {
 		fake.byID[d.TenantID+":"+d.ID] = d
 	}
 	tool := NewVaultReadTool()
 	tool.SetVaultStore(fake)
-	tool.SetWorkspace(ws)
-	return tool, ws
+	tool.SetWorkspace(base)
+
+	contentRoot := base
+	if len(docs) > 0 {
+		if tid, err := uuid.Parse(docs[0].TenantID); err == nil {
+			contentRoot = config.TenantWorkspace(base, tid, "")
+		}
+	}
+	return tool, contentRoot
 }
 
 // writeFile creates a file under workspace with the given relative path.
@@ -916,4 +930,119 @@ func TestVaultRead_TrulyMissingReturnsNotFound(t *testing.T) {
 	if !res.IsError || !strings.Contains(res.ForLLM, "not found") {
 		t.Fatalf("expected document not found, got: %s", res.ForLLM)
 	}
+}
+
+// --- 18. Regression: non-master tenant content lives under tenants/<slug>/.
+// The tool holds the GLOBAL root, so a global-root join misses the file and
+// every non-master tenant reads ENOENT while vault_search (DB-only) still
+// returns the doc. Mirrors the production failure on tenant "alpha". ---
+func TestVaultRead_NonMasterTenant_ResolvesUnderTenantRoot(t *testing.T) {
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	docID := uuid.New()
+	doc := &store.VaultDocument{
+		ID: docID.String(), TenantID: tenantID.String(),
+		Scope: "shared", Path: "agents/ho-tro/Refund Flow.md",
+		Title: "Refund Flow", DocType: "note",
+	}
+	base := t.TempDir()
+	fake := &fakeVaultStore{byID: map[string]*store.VaultDocument{
+		tenantID.String() + ":" + docID.String(): doc,
+	}}
+	tool := NewVaultReadTool()
+	tool.SetVaultStore(fake)
+	tool.SetWorkspace(base)
+
+	// Written by the tenant-aware write path; slug comes from context.
+	tenantRoot := config.TenantWorkspace(base, tenantID, "alpha")
+	writeFile(t, tenantRoot, "agents/ho-tro/Refund Flow.md", "refund body")
+
+	ctx := store.WithTenantSlug(makeCtx(tenantID, agentID), "alpha")
+	res := tool.Execute(ctx, map[string]any{"doc_id": docID.String()})
+	if res.IsError {
+		t.Fatalf("tenant doc must resolve under tenants/<slug>/, got: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "refund body") {
+		t.Fatalf("content missing: %s", res.ForLLM)
+	}
+}
+
+// --- 19. Master tenant keeps using the base root (no tenants/ segment), so
+// the fix above must not regress single-tenant and master installs. ---
+func TestVaultRead_MasterTenant_UsesBaseRoot(t *testing.T) {
+	agentID := uuid.New()
+	docID := uuid.New()
+	doc := &store.VaultDocument{
+		ID: docID.String(), TenantID: store.MasterTenantID.String(),
+		Scope: "shared", Path: "agents/ho-tro/note.md",
+		Title: "Note", DocType: "note",
+	}
+	base := t.TempDir()
+	fake := &fakeVaultStore{byID: map[string]*store.VaultDocument{
+		store.MasterTenantID.String() + ":" + docID.String(): doc,
+	}}
+	tool := NewVaultReadTool()
+	tool.SetVaultStore(fake)
+	tool.SetWorkspace(base)
+
+	// No tenants/ segment for master.
+	writeFile(t, base, "agents/ho-tro/note.md", "master body")
+
+	res := tool.Execute(makeCtx(store.MasterTenantID, agentID),
+		map[string]any{"doc_id": docID.String()})
+	if res.IsError {
+		t.Fatalf("master doc must resolve at base root, got: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "master body") {
+		t.Fatalf("content missing: %s", res.ForLLM)
+	}
+}
+
+// --- 20. Slug absent from context (channel/cron runs) → fall back to the
+// TenantStore lookup, since a UUID-named directory would miss the slug-named
+// one the write path created. ---
+func TestVaultRead_SlugMissingFromContext_FallsBackToTenantStore(t *testing.T) {
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	docID := uuid.New()
+	doc := &store.VaultDocument{
+		ID: docID.String(), TenantID: tenantID.String(),
+		Scope: "shared", Path: "agents/ho-tro/note.md",
+		Title: "Note", DocType: "note",
+	}
+	base := t.TempDir()
+	fake := &fakeVaultStore{byID: map[string]*store.VaultDocument{
+		tenantID.String() + ":" + docID.String(): doc,
+	}}
+	tool := NewVaultReadTool()
+	tool.SetVaultStore(fake)
+	tool.SetWorkspace(base)
+	tool.SetTenantStore(&fakeTenantStoreRead{slug: "alpha", id: tenantID})
+
+	writeFile(t, config.TenantWorkspace(base, tenantID, "alpha"),
+		"agents/ho-tro/note.md", "cron body")
+
+	// Context deliberately carries no slug.
+	res := tool.Execute(makeCtx(tenantID, agentID),
+		map[string]any{"doc_id": docID.String()})
+	if res.IsError {
+		t.Fatalf("slug fallback must resolve the doc, got: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "cron body") {
+		t.Fatalf("content missing: %s", res.ForLLM)
+	}
+}
+
+// fakeTenantStoreRead resolves a single tenant slug for the fallback path.
+type fakeTenantStoreRead struct {
+	store.TenantStore
+	id   uuid.UUID
+	slug string
+}
+
+func (f *fakeTenantStoreRead) GetTenant(_ context.Context, id uuid.UUID) (*store.TenantData, error) {
+	if id != f.id {
+		return nil, os.ErrNotExist
+	}
+	return &store.TenantData{ID: f.id, Slug: f.slug}, nil
 }
