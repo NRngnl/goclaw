@@ -380,6 +380,35 @@ flowchart TD
 | `team` | 100 | `GOCLAW_LANE_TEAM` | Agent team/delegation executions |
 | `cron` | 30 | `GOCLAW_LANE_CRON` | Scheduled cron jobs |
 
+### Scaling Beyond the Lane Defaults
+
+`main` bounds how many users can be answered at once, but raising it alone just
+moves the queue downstream. These knobs need to move with it:
+
+| Setting | Default | Env Override | Why it binds |
+|---------|:-------:|--------------|--------------|
+| Postgres max open conns | 25 | `GOCLAW_PG_MAX_OPEN_CONNS` | Held per query, not per run — undersizing shows up as burst latency when many runs load context at once |
+| Postgres max idle conns | 10 | `GOCLAW_PG_MAX_IDLE_CONNS` | Clamped to max open |
+| Provider idle conns | 100 | `GOCLAW_HTTP_MAX_IDLE_CONNS` | Total across all provider hosts |
+| Provider idle conns per host | 10 | `GOCLAW_HTTP_MAX_IDLE_CONNS_PER_HOST` | When one provider takes nearly all traffic, every request past this limit pays a fresh TCP+TLS handshake. Self-hosted/in-network providers should match `main`. |
+| Outbound dispatch shards | 8 | `GOCLAW_OUTBOUND_SHARDS` | See below |
+
+Channel-side rate limits are metered by the *remote* platform and are not
+covered by any of the above — DingTalk's AI Card API, for instance, meters per
+app, so `card_update_interval_ms` decides how many conversations can stream
+concurrently regardless of local capacity.
+
+### Outbound Dispatch
+
+Outbound delivery is sharded by `channel + ChatID`. A conversation always maps
+to the same shard and is delivered serially there, so the ordering a run
+depends on — block replies, retry notices, then the final answer — is
+preserved. Unrelated conversations run in parallel, so one slow send (a media
+upload of several seconds) no longer stalls every other reply in the process.
+
+Raising `GOCLAW_OUTBOUND_SHARDS` past the point where the remote API meters the
+gateway only moves queueing from this process into theirs.
+
 ### Session Queue Concurrency
 
 Per-session queues now support configurable `maxConcurrent`:
