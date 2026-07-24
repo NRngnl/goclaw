@@ -61,6 +61,12 @@ func processNormalMessage(
 		})
 		return
 	}
+	// Team Work and intent gates run before Loop.injectContext. Propagate the
+	// resolved agent budget here so every classifier sees the same authority.
+	ctx = agent.WithAgentBudget(ctx, agentLoop)
+	if uid := agentLoop.UUID(); uid != uuid.Nil {
+		ctx = store.WithAgentID(ctx, uid)
+	}
 
 	// Build session key based on scope config (matching TS buildAgentPeerSessionKey).
 	peerKind := msg.PeerKind

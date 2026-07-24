@@ -95,7 +95,7 @@ type pipelineCallbackSet struct {
 	flushMessages      func(ctx context.Context, sessionKey string, msgs []providers.Message) error
 	updateMetadata     func(ctx context.Context, sessionKey string, usage, lastUsage providers.Usage, msgCount int) error
 	bootstrapCleanup   func(ctx context.Context, state *pipeline.RunState) error
-	maybeSummarize     func(ctx context.Context, sessionKey string)
+	maybeSummarize     func(ctx context.Context, sessionKey string, midLoopCompacted bool)
 }
 
 func (l *Loop) makeResolveWorkspace(req *RunRequest) func(ctx context.Context, input *pipeline.RunInput) (*workspace.WorkspaceContext, error) {
@@ -759,13 +759,25 @@ func (l *Loop) makeBootstrapCleanup() func(ctx context.Context, state *pipeline.
 }
 
 func (l *Loop) reserveLLMUsage(ctx context.Context, req *RunRequest, state *pipeline.RunState, chatReq providers.ChatRequest, attempt string) (*usagecaps.Reservation, error) {
-	if l.usageCaps == nil || state.Provider == nil {
-		return nil, nil
+	providerName := ""
+	if state.Provider != nil {
+		providerName = state.Provider.Name()
 	}
-	return l.reserveLLMUsageFor(ctx, req, state.Iteration, chatReq, attempt, state.Provider.Name(), state.Model)
+	// reserveLLMUsageFor runs the mandatory hard-ceiling guard before any
+	// reservation or transport, so the non-fallback path is guarded here even
+	// when usage caps are disabled (Lite runtime).
+	return l.reserveLLMUsageFor(ctx, req, state.Iteration, chatReq, attempt, providerName, state.Model)
 }
 
 func (l *Loop) reserveLLMUsageFor(ctx context.Context, req *RunRequest, iteration int, chatReq providers.ChatRequest, attempt, providerName, model string) (*usagecaps.Reservation, error) {
+	// Mandatory final hard-ceiling guard for the concrete request that is about
+	// to be sent, after all directive/retry/reasoning mutations. This is the
+	// shared pre-transport chokepoint for BOTH the fallback candidate path and
+	// the non-fallback path (via reserveLLMUsage), and for every retry attempt.
+	// It runs regardless of usage-cap configuration so the ceiling holds on Lite.
+	if guardErr := l.guardCompleteModelRequest(chatReq, providerName, model, attempt); guardErr != nil {
+		return nil, guardErr
+	}
 	if l.usageCaps == nil {
 		return nil, nil
 	}

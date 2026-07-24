@@ -120,7 +120,9 @@ func (s *FinalizeStage) Execute(ctx context.Context, state *RunState) error {
 		state.Tool.MediaResults = append(state.Tool.MediaResults, mr)
 	}
 
-	// 4. Flush remaining pending messages to session store
+	// 4. Flush remaining pending messages to session store.
+	// Capture the pre-flush history length so metadata msgCount reflects
+	// history + newly-persisted pending (matches upstream calibration).
 	historyCountBeforeFlush := len(state.Messages.History())
 	pending := state.Messages.FlushPending()
 	persistablePending := persistableMessages(pending)
@@ -145,9 +147,15 @@ func (s *FinalizeStage) Execute(ctx context.Context, state *RunState) error {
 		}
 	}
 
-	// 7. Post-run summarization (async background)
+	// 7. Post-run summarization (async background).
+	// Pass the mid-loop pressure flag: when the guard had to compact mid-loop this
+	// run, maybeSummarize uses a lower, unit-aligned threshold so the compaction is
+	// PERSISTED to the session (TruncateHistory + IncrementCompaction) instead of
+	// being thrown away — which both breaks the per-turn re-compaction loop (Việc 2)
+	// and advances the cumulative compaction count so episodic can progress (Việc 1-B).
+	// Both mid-loop paths (prune_stage + compactForFinalRequestBudget) set this flag.
 	if s.deps.MaybeSummarize != nil {
-		s.deps.MaybeSummarize(ctx, state.Input.SessionKey)
+		s.deps.MaybeSummarize(ctx, state.Input.SessionKey, state.Prune.MidLoopCompacted)
 	}
 
 	// 8. Emit session.completed for consolidation pipeline (episodic → semantic → dreaming).

@@ -38,6 +38,9 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if l.tenantID != uuid.Nil {
 		ctx = store.WithTenantID(ctx, l.tenantID)
 	}
+	// Propagate the configured agent budget to every nested model call.
+	ctx = store.WithAgentContextWindow(ctx, l.contextWindow)
+	ctx = store.WithAgentMaxTokens(ctx, l.effectiveMaxTokens())
 	// Inject user ID into context for per-user scoping (memory, context files, etc.)
 	if req.UserID != "" {
 		ctx = store.WithUserID(ctx, req.UserID)

@@ -782,13 +782,15 @@
     },
     "compaction": {
       "title": "압축",
-      "description": "컨텍스트 창 압축 및 메모리 플러시 설정",
+      "description": "최종 요청 컨텍스트 보호, 기록 압축, 메모리 플러시 설정",
       "maxHistoryShare": "최대 기록 비율 (0-1)",
-      "maxHistoryShareTip": "대화 기록을 위한 컨텍스트 창의 최대 비율 (예: 0.85 = 85%). 초과 시 압축이 트리거됩니다.",
+      "maxHistoryShareTip": "턴 이후 기록 압축에만 사용하는 기록 전용 임계값입니다. 최종 요청 전체 제한이 아닙니다.",
       "keepLastMessages": "마지막 메시지 유지",
       "keepLastMessagesTip": "압축 후 유지되는 최근 메시지입니다. 오래된 메시지는 요약으로 대체됩니다.",
       "memoryFlush": "메모리 플러시",
-      "memoryFlushTip": "압축 전에 에이전트가 중요한 컨텍스트를 메모리 파일에 저장할 기회를 얻습니다. 지식 그래프 추출도 트리거합니다."
+      "memoryFlushTip": "압축 전에 에이전트가 중요한 컨텍스트를 메모리 파일에 저장할 기회를 얻습니다. 지식 그래프 추출도 트리거합니다.",
+      "maxRequestShare": "최대 요청 비율 (0-1)",
+      "maxRequestShareTip": "모델에 보내는 최종 요청이 에이전트 컨텍스트 창에서 사용할 수 있는 최대 비율입니다. 초과하면 시스템이 모델 호출 전에 컨텍스트를 줄입니다."
     },
     "contextPruning": {
       "title": "컨텍스트 정리",

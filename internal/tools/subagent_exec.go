@@ -344,8 +344,23 @@ func (sm *SubagentManager) executeTask(ctx context.Context, task *SubagentTask) 
 }
 
 func (sm *SubagentManager) chatSubagentWithUsageCap(ctx context.Context, task *SubagentTask, activeProvider providers.Provider, model string, chatReq providers.ChatRequest, iteration, attempt int) (*providers.ChatResponse, error) {
+	budget := usagecaps.AgentBudget{
+		ContextWindow: task.OriginContextWindow,
+		MaxTokens:     task.OriginMaxTokens,
+	}
+	if budget.ContextWindow <= 0 {
+		budget.ContextWindow = sm.contextWindow
+	}
+	if budget.MaxTokens <= 0 {
+		budget.MaxTokens = sm.maxTokens
+	}
+	chatReq = clampToolRequestMaxTokens(chatReq, budget.MaxTokens)
 	if fallbackProvider, ok := activeProvider.(*providers.ModelFallbackProvider); ok {
 		before := func(callCtx context.Context, entry providers.FallbackCandidate, actualReq providers.ChatRequest) (providers.FallbackAfterCall, error) {
+			// Guard this fallback request with the calling agent budget.
+			if guardErr := usagecaps.GuardContextWindow(clampToolRequestMaxTokens(actualReq, budget.MaxTokens), entry.ProviderName, actualReq.Model, "subagent:"+task.ID, budget); guardErr != nil {
+				return nil, guardErr
+			}
 			reservation, err := sm.reserveSubagentUsage(callCtx, task, entry.ProviderName, actualReq.Model, actualReq, fmt.Sprintf("%d:%d:%s:%s", iteration, attempt, entry.ProviderName, actualReq.Model))
 			if err != nil {
 				return nil, err
@@ -357,6 +372,10 @@ func (sm *SubagentManager) chatSubagentWithUsageCap(ctx context.Context, task *S
 			}, nil
 		}
 		return fallbackProvider.ChatWithHook(ctx, chatReq, before)
+	}
+	// Guard the non-fallback request with the calling agent budget.
+	if guardErr := usagecaps.GuardContextWindow(chatReq, activeProvider.Name(), model, "subagent:"+task.ID, budget); guardErr != nil {
+		return nil, guardErr
 	}
 	reservation, err := sm.reserveSubagentUsage(ctx, task, activeProvider.Name(), model, chatReq, fmt.Sprintf("%d:%d", iteration, attempt))
 	if err != nil {

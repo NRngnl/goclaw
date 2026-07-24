@@ -206,7 +206,13 @@ func (l *Loop) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			"iterations", result.Iterations,
 		}
 		if result.Usage != nil {
-			logAttrs = append(logAttrs, "total_tokens", result.Usage.TotalTokens)
+			logAttrs = append(logAttrs,
+				"total_tokens", result.Usage.TotalTokens,
+				"total_prompt_tokens", result.Usage.PromptTokens,
+			)
+		}
+		if result.LastUsage != nil {
+			logAttrs = append(logAttrs, "last_usage_prompt_tokens", result.LastUsage.PromptTokens)
 		}
 		slog.Info("v3.run.completed", logAttrs...)
 

@@ -400,6 +400,7 @@ func TestPipeline_BuildResultPopulatesRunID(t *testing.T) {
 	state := buildMinimalRunState()
 	state.Observe.FinalContent = "hello"
 	state.Think.TotalUsage = providers.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	state.Think.LastUsage = providers.Usage{PromptTokens: 7, CompletionTokens: 2, TotalTokens: 9}
 
 	result, err := p.Run(context.Background(), state)
 	if err != nil {
@@ -413,6 +414,9 @@ func TestPipeline_BuildResultPopulatesRunID(t *testing.T) {
 	}
 	if result.TotalUsage.TotalTokens != 15 {
 		t.Errorf("result.TotalUsage.TotalTokens = %d, want 15", result.TotalUsage.TotalTokens)
+	}
+	if result.LastUsage.TotalTokens != 9 {
+		t.Errorf("result.LastUsage.TotalTokens = %d, want 9", result.LastUsage.TotalTokens)
 	}
 	if result.Duration <= 0 {
 		t.Errorf("result.Duration = %v, want > 0", result.Duration)
@@ -506,6 +510,7 @@ func TestRunState_BuildResult_AllFields(t *testing.T) {
 	state.Observe.FinalContent = "final"
 	state.Observe.FinalThinking = "thinking"
 	state.Think.TotalUsage = providers.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
+	state.Think.LastUsage = providers.Usage{PromptTokens: 80, CompletionTokens: 20, TotalTokens: 100}
 	state.Iteration = 7
 	state.Tool.TotalToolCalls = 3
 	state.Tool.LoopKilled = true
@@ -527,6 +532,9 @@ func TestRunState_BuildResult_AllFields(t *testing.T) {
 	}
 	if r.TotalUsage.TotalTokens != 150 {
 		t.Errorf("TotalUsage.TotalTokens = %d", r.TotalUsage.TotalTokens)
+	}
+	if r.LastUsage.TotalTokens != 100 {
+		t.Errorf("LastUsage.TotalTokens = %d", r.LastUsage.TotalTokens)
 	}
 	if r.Iterations != 7 {
 		t.Errorf("Iterations = %d", r.Iterations)

@@ -34,6 +34,10 @@ func TestRunSyncHonorsPerTaskModelOverride(t *testing.T) {
 
 	ctx := store.WithTenantID(context.Background(), uuid.New())
 	ctx = WithParentModel(ctx, "parent-model")
+	// The subagent's internal LLM call is agent-scoped; the guard requires a
+	// budget in ctx (propagated from the calling agent via injectContext).
+	ctx = store.WithAgentContextWindow(ctx, 200_000)
+	ctx = store.WithAgentMaxTokens(ctx, 32_000)
 
 	result, _, err := manager.RunSync(ctx, "parent", 0, "test task", "test", "requested-model", "test", "chat")
 	if err != nil {
