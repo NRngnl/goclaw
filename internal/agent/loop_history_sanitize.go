@@ -213,16 +213,30 @@ func hasPendingToolResultAhead(msgs []providers.Message, start int, idQueue map[
 	return false
 }
 
-func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
+// maybeSummarize truncates+summarizes session history when it grows large.
+//
+// midLoopCompacted signals that the final-request guard already had to compact
+// this session mid-loop. Because mid-loop compaction only mutates the run's
+// message buffer (never the session store), it is thrown away every turn —
+// causing an unbounded re-compaction loop AND stalling the cumulative compaction
+// count episodic depends on. When set, we lower the trigger threshold to a
+// unit-aligned "pressure threshold" so the compaction gets PERSISTED here.
+func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string, midLoopCompacted bool) {
 	history := l.sessions.GetHistory(ctx, sessionKey)
 
 	// Use calibrated token estimation, adjusted for overhead.
 	// lastPromptTokens includes everything (system prompt, tools, context files, history).
 	// We subtract estimated overhead so the threshold comparison is history-only.
 	lastPT, lastMC := l.sessions.GetLastPromptTokens(ctx, sessionKey)
-	overheadEstimate := l.estimateOverhead(history, lastPT, lastMC)
-	adjustedLastPT := max(lastPT-overheadEstimate, 0)
-	tokenEstimate := EstimateTokensWithCalibration(history, adjustedLastPT, lastMC)
+	calibrationPT, calibrationMC := lastPT, lastMC
+	calibrationInvalid := l.contextWindow > 0 && lastPT > l.contextWindow
+	if calibrationInvalid {
+		calibrationPT = 0
+		calibrationMC = 0
+	}
+	overheadEstimate := l.estimateOverhead(history, calibrationPT, calibrationMC)
+	adjustedLastPT := max(calibrationPT-overheadEstimate, 0)
+	tokenEstimate := EstimateTokensWithCalibration(history, adjustedLastPT, calibrationMC)
 
 	// Resolve compaction threshold from config: token-only (no message count guard).
 	// Industry standard — Claude Code, Anthropic API, LangChain all use token-based thresholds.
@@ -231,9 +245,28 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 		historyShare = l.compactionCfg.MaxHistoryShare
 	}
 
+	// Baseline (floor) threshold: history-only, MaxHistoryShare. Used when there was
+	// no mid-loop pressure this run — keeps normal sessions from over-compacting.
 	threshold := int(float64(l.contextWindow) * historyShare)
-	if tokenEstimate <= threshold {
-		l.logCompactionDecision(sessionKey, "skip", "under_threshold", tokenEstimate, threshold, historyShare, lastPT, lastMC, adjustedLastPT, overheadEstimate)
+	effectiveThreshold := threshold
+	if midLoopCompacted {
+		// Pressure threshold: align the unit + constants with the final-request guard by
+		// reusing compactionInputCap() (min(cw-maxTokens, cw*MaxRequestShare-maxTokens)),
+		// then subtract the fixed overhead estimate to compare against history-only
+		// tokenEstimate. The guard reads MaxRequestShare while this path historically read
+		// MaxHistoryShare — a DIFFERENT config field — so we must NOT rebuild the formula
+		// from historyShare or the two would diverge under custom config.
+		pressureThreshold := max(l.compactionInputCap()-overheadEstimate, 0)
+		// Defensive floor: a pathological config (maxTokens >= cw*MaxRequestShare) could
+		// drive compactionInputCap() toward 0, making pressureThreshold≈0 and forcing a
+		// summarize on every mid-loop turn. Never drop below half the baseline threshold.
+		if minFloor := threshold / 2; pressureThreshold < minFloor {
+			pressureThreshold = minFloor
+		}
+		effectiveThreshold = pressureThreshold
+	}
+	if tokenEstimate <= effectiveThreshold {
+		l.logCompactionDecision(sessionKey, "skip", "under_threshold", tokenEstimate, effectiveThreshold, historyShare, lastPT, lastMC, adjustedLastPT, overheadEstimate, calibrationInvalid)
 		return
 	}
 
@@ -243,12 +276,12 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 	muI, _ := l.summarizeMu.LoadOrStore(sessionKey, &sync.Mutex{})
 	sessionMu := muI.(*sync.Mutex)
 	if !sessionMu.TryLock() {
-		l.logCompactionDecision(sessionKey, "skip", "already_in_progress", tokenEstimate, threshold, historyShare, lastPT, lastMC, adjustedLastPT, overheadEstimate)
+		l.logCompactionDecision(sessionKey, "skip", "already_in_progress", tokenEstimate, effectiveThreshold, historyShare, lastPT, lastMC, adjustedLastPT, overheadEstimate, calibrationInvalid)
 		slog.Debug("summarization already in progress, skipping", "session", sessionKey)
 		return
 	}
 
-	l.logCompactionDecision(sessionKey, "trigger", "", tokenEstimate, threshold, historyShare, lastPT, lastMC, adjustedLastPT, overheadEstimate)
+	l.logCompactionDecision(sessionKey, "trigger", "", tokenEstimate, effectiveThreshold, historyShare, lastPT, lastMC, adjustedLastPT, overheadEstimate, calibrationInvalid)
 
 	// Memory flush runs synchronously INSIDE the guard
 	// (so concurrent runs don't both trigger flush for the same compaction cycle).
@@ -282,42 +315,49 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 		summary := l.sessions.GetSummary(sctx, sessionKey)
 		toSummarize := history[:len(history)-keepLast]
 
-		var sb strings.Builder
+		// Resolve the same per-agent request budget the mid-loop compaction path
+		// uses so no single summarization request can exceed the window. The old
+		// path concatenated the entire history into one prompt, which could blow
+		// the hard ceiling on large sessions; chunk + map-reduce keeps every
+		// request within cap.
+		inputCap := l.compactionInputCap()
+		if inputCap <= 0 {
+			slog.Warn("summarization failed", "session", sessionKey, "error", "context_window_unresolved")
+			return
+		}
+
 		var mediaKinds []string
 		for _, m := range toSummarize {
-			if m.Role == "user" {
-				sb.WriteString(fmt.Sprintf("user: %s\n", m.Content))
-			} else if m.Role == "assistant" {
-				sb.WriteString(fmt.Sprintf("assistant: %s\n", SanitizeAssistantContent(m.Content)))
-			}
 			for _, ref := range m.MediaRefs {
 				mediaKinds = append(mediaKinds, ref.Kind)
 			}
 		}
 
-		var prompt strings.Builder
-		prompt.WriteString(compactionSummaryPrompt)
+		// Build cap-respecting units, prepending any existing summary and a media
+		// note as their own leading units so the packer can split them if needed.
+		var leading []string
+		if summary != "" {
+			leading = append(leading, "Existing context: "+summary+"\n\n")
+		}
 		if len(mediaKinds) > 0 {
-			// Deduplicate and count media types for a compact note.
 			counts := make(map[string]int)
 			for _, k := range mediaKinds {
 				counts[k]++
 			}
-			prompt.WriteString("Note: user shared media files (")
+			var note strings.Builder
+			note.WriteString("Note: user shared media files (")
 			first := true
 			for k, n := range counts {
 				if !first {
-					prompt.WriteString(", ")
+					note.WriteString(", ")
 				}
-				prompt.WriteString(fmt.Sprintf("%d %s(s)", n, k))
+				note.WriteString(fmt.Sprintf("%d %s(s)", n, k))
 				first = false
 			}
-			prompt.WriteString(") which are no longer in context. Mention briefly if relevant.\n\n")
+			note.WriteString(") which are no longer in context. Mention briefly if relevant.\n\n")
+			leading = append(leading, note.String())
 		}
-		if summary != "" {
-			prompt.WriteString("Existing context: " + summary + "\n\n")
-		}
-		prompt.WriteString(sb.String())
+		units := append(leading, buildCompactionUnits(toSummarize)...)
 
 		inTokens := l.estimateSummaryInputTokens(toSummarize)
 		slog.Info("compact_budget",
@@ -327,22 +367,19 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 			"in_tokens", inTokens,
 			"out_tokens", dynamicSummaryMax(inTokens),
 			"context_window", l.contextWindow,
+			"input_cap_tokens", inputCap,
 			"threshold", threshold,
 			"token_estimate", tokenEstimate,
 			"max_history_share", historyShare,
 			"reserve_tokens_floor", l.resolveReserveTokens(),
 			"timeout_seconds", int(timeout/time.Second),
 		)
-		chatReq := providers.ChatRequest{
-			Messages: []providers.Message{{Role: "user", Content: prompt.String()}},
-			Model:    l.model,
-			Options:  map[string]any{"max_tokens": dynamicSummaryMax(inTokens), "temperature": 0.3},
-		}
-		resp, err := l.callInternalLLMWithUsage(sctx, chatReq, "session-summarization")
+		summaryContent, _, err := l.summarizeCompactionUnits(sctx, units, inputCap, 1)
 		if err != nil {
 			slog.Warn("summarization failed", "session", sessionKey, "error", err)
 			return
 		}
+		resp := &providers.ChatResponse{Content: summaryContent}
 
 		// Collect MediaRefs from messages about to be truncated (keep up to 30 most recent).
 		const maxPreservedMediaRefs = 30
@@ -381,7 +418,7 @@ func (l *Loop) maybeSummarize(ctx context.Context, sessionKey string) {
 	}()
 }
 
-func (l *Loop) logCompactionDecision(sessionKey, decision, skipReason string, tokenEstimate, threshold int, historyShare float64, lastPromptTokens, lastMessageCount, adjustedLastPromptTokens, overheadEstimate int) {
+func (l *Loop) logCompactionDecision(sessionKey, decision, skipReason string, tokenEstimate, threshold int, historyShare float64, lastPromptTokens, lastMessageCount, adjustedLastPromptTokens, overheadEstimate int, calibrationInvalid bool) {
 	args := []any{
 		"path", "post-turn",
 		"agent", l.id,
@@ -396,6 +433,10 @@ func (l *Loop) logCompactionDecision(sessionKey, decision, skipReason string, to
 		"last_message_count", lastMessageCount,
 		"adjusted_last_prompt_tokens", adjustedLastPromptTokens,
 		"overhead_estimate", overheadEstimate,
+		"calibration_invalid", calibrationInvalid,
+	}
+	if calibrationInvalid {
+		args = append(args, "invalid_last_prompt_tokens", lastPromptTokens)
 	}
 	if skipReason != "" {
 		args = append(args, "skip_reason", skipReason)

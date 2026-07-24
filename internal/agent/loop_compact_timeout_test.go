@@ -25,8 +25,9 @@ func TestCompactMessagesInPlace_UsesDefaultTimeout(t *testing.T) {
 		capturingProvider: capturingProvider{response: "Summary of conversation."},
 	}
 	loop := &Loop{
-		provider: provider,
-		model:    "claude-3-5-sonnet",
+		provider:      provider,
+		model:         "claude-3-5-sonnet",
+		contextWindow: 200_000,
 	}
 
 	start := time.Now()
@@ -43,8 +44,9 @@ func TestCompactMessagesInPlace_UsesConfiguredTimeout(t *testing.T) {
 		capturingProvider: capturingProvider{response: "Summary of conversation."},
 	}
 	loop := &Loop{
-		provider: provider,
-		model:    "claude-3-5-sonnet",
+		provider:      provider,
+		model:         "claude-3-5-sonnet",
+		contextWindow: 200_000,
 		compactionCfg: &config.CompactionConfig{
 			TimeoutSeconds: 45,
 		},
@@ -64,8 +66,9 @@ func TestCompactMessagesInPlace_NonPositiveTimeoutFallsBackToDefault(t *testing.
 		capturingProvider: capturingProvider{response: "Summary of conversation."},
 	}
 	loop := &Loop{
-		provider: provider,
-		model:    "claude-3-5-sonnet",
+		provider:      provider,
+		model:         "claude-3-5-sonnet",
+		contextWindow: 200_000,
 		compactionCfg: &config.CompactionConfig{
 			TimeoutSeconds: -1,
 		},

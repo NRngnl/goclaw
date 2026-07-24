@@ -83,17 +83,10 @@ func (s *ContextStage) Execute(ctx context.Context, state *RunState) error {
 		state.Ctx = ctx
 	}
 
-	// 0.5. Resolve the effective context window for this run's provider/model.
-	// Done once here so PruneStage reads a stable value on every iteration and
-	// the budget can't drift if the model somehow changes mid-run. A zero
-	// result from the resolver (unknown model, no registry) leaves the field
-	// zero — PruneStage then falls back to Config.ContextWindow.
-	if s.deps.ResolveContextWindow != nil && state.Model != "" {
-		providerID := ""
-		if state.Provider != nil {
-			providerID = state.Provider.Name()
-		}
-		if cw := s.deps.ResolveContextWindow(providerID, state.Model); cw > 0 {
+	// 0.5. Snapshot the configured agent window once for this run. Model and
+	// provider do not participate in request-budget authority.
+	if s.deps.ResolveContextWindow != nil {
+		if cw := s.deps.ResolveContextWindow(); cw > 0 {
 			state.Context.EffectiveContextWindow = cw
 		}
 	}

@@ -37,6 +37,10 @@ const (
 	ShellDenyGroupsKey contextKey = "goclaw_shell_deny_groups"
 	// AgentKeyKey is the context key for the agent key/name (string identifier, e.g. "default").
 	AgentKeyKey contextKey = "goclaw_agent_key"
+	// AgentContextWindowKey carries the calling agent's configured context window.
+	AgentContextWindowKey contextKey = "goclaw_agent_context_window"
+	// AgentMaxTokensKey carries the calling agent's configured output reserve.
+	AgentMaxTokensKey contextKey = "goclaw_agent_max_tokens"
 	// TenantIDKey is the context key for the tenant UUID.
 	TenantIDKey contextKey = "goclaw_tenant_id"
 	// CrossTenantKey indicates the caller has cross-tenant access (owner/system admin).
@@ -137,6 +141,38 @@ func CredentialUserIDFromContext(ctx context.Context) string {
 		return rc.CredentialUserID
 	}
 	return UserIDFromContext(ctx)
+}
+
+// WithAgentContextWindow returns a context carrying the configured agent window.
+func WithAgentContextWindow(ctx context.Context, window int) context.Context {
+	if window <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, AgentContextWindowKey, window)
+}
+
+// AgentContextWindowFromContext returns the configured agent window, or zero.
+func AgentContextWindowFromContext(ctx context.Context) int {
+	if v, ok := ctx.Value(AgentContextWindowKey).(int); ok && v > 0 {
+		return v
+	}
+	return 0
+}
+
+// WithAgentMaxTokens returns a context carrying the configured agent max_tokens.
+func WithAgentMaxTokens(ctx context.Context, maxTokens int) context.Context {
+	if maxTokens <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, AgentMaxTokensKey, maxTokens)
+}
+
+// AgentMaxTokensFromContext returns the configured agent max_tokens, or zero.
+func AgentMaxTokensFromContext(ctx context.Context) int {
+	if v, ok := ctx.Value(AgentMaxTokensKey).(int); ok && v > 0 {
+		return v
+	}
+	return 0
 }
 
 // WithAgentID returns a new context with the given agent UUID.

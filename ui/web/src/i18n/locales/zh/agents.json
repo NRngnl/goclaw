@@ -797,15 +797,17 @@
     },
     "compaction": {
       "title": "压缩",
-      "description": "上下文窗口压缩和压缩前记忆设置",
+      "description": "最终请求上下文保护、历史压缩和记忆刷新设置",
       "maxHistoryShare": "最大历史份额 (0-1)",
-      "maxHistoryShareTip": "上下文窗口用于对话历史的最大比例（如0.85 = 85%）。超过时触发压缩。",
+      "maxHistoryShareTip": "仅用于回合后的历史压缩阈值，不是最终请求的总限制。",
       "keepLastMessages": "保留最后消息数",
       "keepLastMessagesTip": "压缩后保留的最近消息数。旧消息被摘要替换。",
       "timeoutSeconds": "超时秒数",
       "timeoutSecondsTip": "等待上下文压缩摘要的最长时间，超时后保留原始历史。",
       "memoryFlush": "压缩前记忆",
-      "memoryFlushTip": "压缩前，Agent可以将重要上下文保存到记忆文件。同时触发知识图谱提取。"
+      "memoryFlushTip": "压缩前，Agent可以将重要上下文保存到记忆文件。同时触发知识图谱提取。",
+      "maxRequestShare": "最大请求份额 (0-1)",
+      "maxRequestShareTip": "最终发送给模型的请求最多可占用智能体上下文窗口的比例。超过时，系统会先缩减上下文再调用模型。"
     },
     "inboundDebounce": {
       "title": "入站防抖",

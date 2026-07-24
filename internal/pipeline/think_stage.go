@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -53,14 +54,11 @@ func (s *ThinkStage) Execute(ctx context.Context, state *RunState) error {
 		state.Tool.AllowedTools = nil
 	}
 
-	// 3. Construct ChatRequest
-	req := providers.ChatRequest{
-		Messages: state.Messages.All(),
-		Tools:    toolDefs,
-		Model:    state.Model,
-		Options: map[string]any{
-			providers.OptMaxTokens: s.deps.Config.MaxTokens,
-		},
+	// 3. Construct the final ChatRequest and enforce the request-level
+	// context budget before any provider call is attempted.
+	req, estimate, err := s.prepareFinalRequest(ctx, state, toolDefs)
+	if err != nil {
+		return err
 	}
 
 	// 4. Call LLM (stream or sync — delegated to callback)
@@ -69,35 +67,54 @@ func (s *ThinkStage) Execute(ctx context.Context, state *RunState) error {
 	}
 	resp, err := s.deps.CallLLM(ctx, state, req)
 	if err != nil {
+		// Central hard-ceiling guard rejected the concrete request AFTER the
+		// callback appended its final directive/retry/reasoning mutations (which
+		// prepareFinalRequest could not see). Re-enter the full reduction chain
+		// against the current messages, rebuild, and retry this iteration. Only
+		// when reduction cannot bring the request under the ceiling do we abort —
+		// the guard already guaranteed zero transport calls were made.
+		if isRequestBudgetExceededErr(err) {
+			if state.Think.OverflowRetries >= maxBudgetReductionRetries {
+				return fmt.Errorf("request context budget exceeded after reduction: %w", err)
+			}
+			if s.reduceForBudgetExceeded(ctx, state) {
+				// This LLM call produced no response, so LastResponse still holds
+				// the PRIOR iteration's response. Clear it before returning Continue
+				// so ToolStage/ObserveStage in this same iteration do not re-execute
+				// the previous iteration's tool calls. The retry rebuilds and calls
+				// the model again on the next iteration.
+				state.Think.LastResponse = nil
+				return nil // Retry this iteration (Continue result) with reduced context.
+			}
+			return fmt.Errorf("request context budget exceeded, reduction exhausted: %w", err)
+		}
 		// Issue 958: Check for context overflow — attempt emergency compaction + retry
 		if isContextOverflowErr(err) {
 			if state.Think.OverflowRetries > 0 {
 				return fmt.Errorf("context overflow after compaction: %w", err)
 			}
 			if s.tryEmergencyCompaction(ctx, state, "context_overflow_error") {
+				// Same stale-response hazard as the budget path: no response was
+				// produced this iteration, so drop the prior one before retrying.
+				state.Think.LastResponse = nil
 				return nil // Retry this iteration (Continue result)
 			}
 		}
 		return fmt.Errorf("llm call: %w", err)
 	}
 
-	// 5. Accumulate usage across turns: base tokens, ThinkingTokens for reasoning
-	// models, and cache tokens. Cache read/creation must be summed too — otherwise
-	// the aggregated RunResult.Usage (and thus webhook usage + usage_events) reports
-	// zero cache even when each turn hit the prompt cache heavily.
+	// 5. Accumulate usage across turns and retain the usage snapshot for the
+	// request that was just sent. AddUsage preserves provider telemetry fields.
 	if resp.Usage != nil {
-		state.Think.TotalUsage.PromptTokens += resp.Usage.PromptTokens
-		state.Think.TotalUsage.CompletionTokens += resp.Usage.CompletionTokens
-		state.Think.TotalUsage.TotalTokens += resp.Usage.TotalTokens
-		state.Think.TotalUsage.ThinkingTokens += resp.Usage.ThinkingTokens
-		state.Think.TotalUsage.CacheReadTokens += resp.Usage.CacheReadTokens
-		state.Think.TotalUsage.CacheCreationTokens += resp.Usage.CacheCreationTokens
-		if resp.Usage.PromptTokensIncludeCachedSegments {
-			state.Think.TotalUsage.PromptTokensIncludeCachedSegments = true
-		}
+		// Log actual (post-call) usage vs the pre-call budget estimate (my guard
+		// observability), then accumulate the run-cumulative total.
+		s.logFinalRequestActual(ctx, state, estimate, *resp.Usage)
+		AddUsage(&state.Think.TotalUsage, *resp.Usage)
 		// Snapshot per-call usage: the LAST iteration's prompt size IS the
 		// session's current context. Keep the previous snapshot when a response
-		// carries no prompt tokens (e.g. providers that omit usage on some turns).
+		// carries no prompt tokens (e.g. providers that omit usage on some turns)
+		// — matches upstream 503909d3 behaviour, which never wipes a usable
+		// snapshot with an empty final response.
 		if resp.Usage.PromptTokens > 0 {
 			state.Think.LastUsage = *resp.Usage
 		}
@@ -108,6 +125,10 @@ func (s *ThinkStage) Execute(ctx context.Context, state *RunState) error {
 			return fmt.Errorf("llm response truncated before content after compaction")
 		}
 		if s.tryEmergencyCompaction(ctx, state, "empty_length_response") {
+			// LastResponse has NOT yet been updated to this empty response, so it
+			// still holds the prior iteration's result. Clear it so downstream
+			// stages this iteration don't act on the stale response during retry.
+			state.Think.LastResponse = nil
 			return nil // Retry next iteration with compacted history.
 		}
 		return fmt.Errorf("llm response truncated before content")
@@ -170,6 +191,46 @@ func (s *ThinkStage) Execute(ctx context.Context, state *RunState) error {
 	s.emitToolIterationBlockReply(ctx, resp)
 
 	return nil
+}
+
+func (s *ThinkStage) logFinalRequestActual(ctx context.Context, state *RunState, estimate FinalRequestEstimate, usage providers.Usage) {
+	actualInput := InputContextTokens(usage)
+	if actualInput <= 0 || estimate.InputTokens <= 0 {
+		return
+	}
+
+	providerName := ""
+	if state.Provider != nil {
+		providerName = state.Provider.Name()
+	}
+	ratio := float64(actualInput) / float64(estimate.InputTokens)
+	level, reason := finalContextActualLevel(estimate, actualInput)
+	args := []any{
+		"run_id", state.RunID,
+		"iteration", state.Iteration,
+		"provider", providerName,
+		"model", state.Model,
+		"estimated_input", estimate.InputTokens,
+		"actual_input", actualInput,
+		"estimate_ratio", ratio,
+		"effective_window", estimate.ContextWindow,
+		"hard_input_cap", estimate.HardInputCapTokens,
+		"compact_target", estimate.CompactTargetTokens,
+	}
+	if reason != "" {
+		args = append(args, "reason", reason)
+	}
+	slog.Log(ctx, level, "final_context.actual", args...)
+}
+
+func finalContextActualLevel(estimate FinalRequestEstimate, actualInput int) (slog.Level, string) {
+	if actualInput > estimate.HardInputCapTokens {
+		return slog.LevelWarn, "hard_cap_exceeded"
+	}
+	if actualInput*100 > estimate.InputTokens*105 {
+		return slog.LevelWarn, "estimate_undercount"
+	}
+	return slog.LevelDebug, ""
 }
 
 func (s *ThinkStage) tryEmergencyCompaction(ctx context.Context, state *RunState, reason string) bool {
@@ -296,4 +357,65 @@ func isContextOverflowErr(err error) bool {
 	}
 	lower := strings.ToLower(err.Error())
 	return providers.IsContextOverflowMessage(lower)
+}
+
+// maxBudgetReductionRetries bounds how many times a single iteration re-enters
+// reduction after the central request-budget guard rejects the built request.
+// Each retry runs one reduction step; three covers prune -> compact -> shrink.
+const maxBudgetReductionRetries = 3
+
+// contextBudgetExceededError is satisfied by the agent loop's
+// RequestBudgetExceededError. Detected via interface so this package does not
+// import the agent package (which would be a cycle).
+type contextBudgetExceededError interface {
+	ContextBudgetExceeded() bool
+}
+
+// isRequestBudgetExceededErr reports whether err (or anything it wraps) is a
+// request-level context-budget overflow raised by the central pre-transport
+// guard. Such an error guarantees no provider transport call was made.
+func isRequestBudgetExceededErr(err error) bool {
+	var budgetErr contextBudgetExceededError
+	if errors.As(err, &budgetErr) {
+		return budgetErr.ContextBudgetExceeded()
+	}
+	return false
+}
+
+// reduceForBudgetExceeded runs one pass of the reduction chain
+// (prune_history -> compact_history -> shrink_memory) against the current
+// state, stopping at the first step that changes anything. It increments
+// OverflowRetries so a stuck request eventually aborts. Returns true when some
+// reduction was applied and the iteration should retry.
+func (s *ThinkStage) reduceForBudgetExceeded(ctx context.Context, state *RunState) bool {
+	state.Think.OverflowRetries++
+
+	// Rebuild the estimate against current messages so pruning targets the
+	// right budget. Tools are rebuilt lazily by the retried iteration.
+	req := s.buildChatRequest(state, nil)
+	estimate, err := s.finalRequestEstimate(state, req)
+	if err != nil {
+		slog.Warn("request_budget.count_failed", "run_id", state.RunID, "error", err)
+		return false
+	}
+
+	steps := []string{"prune_history", "compact_history", "shrink_memory"}
+	for _, step := range steps {
+		changed, err := s.reduceFinalRequestContext(ctx, state, estimate, step)
+		if err != nil {
+			slog.Warn("request_budget.reduce_failed",
+				"run_id", state.RunID,
+				"step", step,
+				"error", err)
+			continue
+		}
+		if changed {
+			slog.Info("request_budget.reduced",
+				"run_id", state.RunID,
+				"step", step,
+				"overflow_retries", state.Think.OverflowRetries)
+			return true
+		}
+	}
+	return false
 }

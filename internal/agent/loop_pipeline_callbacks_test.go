@@ -103,6 +103,59 @@ func TestSupportsPromptCacheParams(t *testing.T) {
 	}
 }
 
+func TestResolveEffectiveContextWindow_UsesAgentConfigOnly(t *testing.T) {
+	registry := &panicModelRegistry{}
+	loop := &Loop{contextWindow: 128_000, modelRegistry: registry}
+	if got := loop.resolveEffectiveContextWindow(); got != 128_000 {
+		t.Fatalf("resolveEffectiveContextWindow() = %d, want 128000", got)
+	}
+}
+
+type panicModelRegistry struct{}
+
+func (*panicModelRegistry) Resolve(_, _ string) *providers.ModelSpec {
+	panic("model registry must not participate in request budgeting")
+}
+
+func (*panicModelRegistry) Register(providers.ModelSpec) {
+	panic("model registry must not participate in request budgeting")
+}
+
+func (*panicModelRegistry) Catalog(string) []providers.ModelSpec {
+	panic("model registry must not participate in request budgeting")
+}
+
+func TestMakeUpdateMetadataStoresLastUsagePromptTokens(t *testing.T) {
+	sessions := &nopSessionStore{}
+	loop := &Loop{
+		model:    "test-model",
+		provider: finalThinkingStreamProvider{},
+		sessions: sessions,
+	}
+	req := &RunRequest{Channel: "telegram"}
+
+	update := loop.makeUpdateMetadata(req)
+	err := update(context.Background(), "sess-1",
+		providers.Usage{PromptTokens: 225000, CompletionTokens: 3000},
+		providers.Usage{PromptTokens: 70000, CompletionTokens: 100},
+		12,
+	)
+	if err != nil {
+		t.Fatalf("update metadata error: %v", err)
+	}
+	if sessions.inputTokens != 225000 || sessions.outputTokens != 3000 {
+		t.Fatalf("accumulated tokens = %d/%d, want total run 225000/3000", sessions.inputTokens, sessions.outputTokens)
+	}
+	// Upstream 503909d3 calibration: SetLastPromptTokens stores the final call's
+	// full context size (Usage.ContextTokens(), which adds cached segments back
+	// for Anthropic-style usage) PLUS the final completion — the reply joins
+	// history so it occupies the next request's prompt. No cache tokens here, so
+	// ContextTokens()=70000; +100 completion = 70100.
+	if sessions.setLastTokens != 70100 || sessions.setLastMsgCount != 12 {
+		t.Fatalf("last prompt calibration = %d/%d, want last request 70100/12", sessions.setLastTokens, sessions.setLastMsgCount)
+	}
+}
+
 // A Function-nil tool definition (e.g. the native image_generation sentinel,
 // providers.ToolDefinition{Type: "image_generation"}) must not panic the
 // mcp-def counter. Regression for the v3.14.0 nil-pointer crash.

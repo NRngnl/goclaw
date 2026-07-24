@@ -160,7 +160,7 @@ func (t *ReadDocumentTool) callProvider(ctx context.Context, cp credentialProvid
 			Model:   model,
 			Options: map[string]any{"max_tokens": 16384},
 		}
-		reservation, reserveErr := reserveToolLLMUsage(ctx, t.usageCaps, t.Name(), providerName, model, chatReq)
+		reservation, reserveErr := reserveToolLLMUsageWithMedia(ctx, t.usageCaps, t.Name(), providerName, model, chatReq, mime, data)
 		if reserveErr != nil {
 			return nil, nil, reserveErr
 		}

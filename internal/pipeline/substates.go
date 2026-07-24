@@ -118,6 +118,7 @@ type RunResult struct {
 	Content        string
 	Thinking       string
 	TotalUsage     providers.Usage
+	LastUsage      providers.Usage
 	Iterations     int
 	ToolCalls      int
 	LoopKilled     bool

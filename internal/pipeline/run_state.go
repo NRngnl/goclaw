@@ -78,6 +78,7 @@ func (rs *RunState) BuildResult() *RunResult {
 		Content:        rs.Observe.FinalContent,
 		Thinking:       rs.Observe.FinalThinking,
 		TotalUsage:     rs.Think.TotalUsage,
+		LastUsage:      rs.Think.LastUsage,
 		Iterations:     rs.Iteration,
 		ToolCalls:      rs.Tool.TotalToolCalls,
 		LoopKilled:     rs.Tool.LoopKilled,

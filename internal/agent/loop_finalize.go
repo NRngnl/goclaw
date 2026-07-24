@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,10 +187,9 @@ func (l *Loop) finalizeRun(
 	l.sessions.UpdateMetadata(ctx, req.SessionKey, l.model, l.provider.Name(), req.Channel)
 	l.sessions.AccumulateTokens(ctx, req.SessionKey, int64(rs.totalUsage.PromptTokens), int64(rs.totalUsage.CompletionTokens))
 
-	// Calibrate token estimation: store actual prompt tokens + message count.
-	if rs.totalUsage.PromptTokens > 0 {
-		msgCount := len(history) + rs.checkpointFlushedMsgs + len(rs.pendingMsgs)
-		l.sessions.SetLastPromptTokens(ctx, req.SessionKey, rs.totalUsage.PromptTokens, msgCount)
+	// Calibrate token estimation using the last LLM request, not the total run.
+	if rs.lastUsage.PromptTokens > 0 && rs.lastUsageMsgCount > 0 {
+		l.sessions.SetLastPromptTokens(ctx, req.SessionKey, rs.lastUsage.PromptTokens, rs.lastUsageMsgCount)
 	}
 
 	l.sessions.Save(ctx, req.SessionKey)
@@ -203,23 +203,34 @@ func (l *Loop) finalizeRun(
 	}
 
 	// 9. Maybe summarize
-	l.maybeSummarize(ctx, req.SessionKey)
+	// Legacy v2 path has no mid-loop pressure signal (that lives in v3 RunState.Prune),
+	// so pass false — this preserves the original baseline-threshold behavior here.
+	l.maybeSummarize(ctx, req.SessionKey, false)
 
 	// V3: emit session.completed for consolidation pipeline (episodic → semantic → dreaming)
 	if l.domainBus != nil {
+		// Bug C parity: include count in SourceID so the eventbus dedup key advances
+		// per compaction cycle (matches the v3 adapter emit path). This path is
+		// currently disabled (FinalizeStage owns finalization) but kept in sync.
+		finalizeCount := l.sessions.GetCompactionCount(ctx, req.SessionKey)
 		l.domainBus.Publish(eventbus.DomainEvent{
 			Type:     eventbus.EventSessionCompleted,
 			TenantID: l.tenantID.String(),
 			AgentID:  l.agentUUID.String(),
 			UserID:   req.UserID,
-			SourceID: req.SessionKey,
+			SourceID: fmt.Sprintf("%s:%d", req.SessionKey, finalizeCount),
 			Payload: &eventbus.SessionCompletedPayload{
 				SessionKey:      req.SessionKey,
 				MessageCount:    len(history) + len(rs.pendingMsgs),
 				TokensUsed:      rs.totalUsage.PromptTokens + rs.totalUsage.CompletionTokens,
-				CompactionCount: l.sessions.GetCompactionCount(ctx, req.SessionKey),
+				CompactionCount: finalizeCount,
 			},
 		})
+	}
+
+	var lastUsage *providers.Usage
+	if rs.lastUsage.PromptTokens > 0 || rs.lastUsage.CompletionTokens > 0 || rs.lastUsage.TotalTokens > 0 {
+		lastUsage = &rs.lastUsage
 	}
 
 	return &RunResult{
@@ -228,6 +239,7 @@ func (l *Loop) finalizeRun(
 		RunID:          req.RunID,
 		Iterations:     rs.iteration,
 		Usage:          &rs.totalUsage,
+		LastUsage:      lastUsage,
 		Media:          rs.mediaResults,
 		Deliverables:   rs.deliverables,
 		BlockReplies:   rs.blockReplies,

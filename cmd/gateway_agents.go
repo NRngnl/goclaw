@@ -213,6 +213,7 @@ func setupSubagents(providerReg *providers.Registry, cfg *config.Config, msgBus 
 
 	manager := tools.NewSubagentManager(provider, providerReg, agentCfg.Model, msgBus, toolsFactory, subCfg)
 	manager.SetUsageCapService(usageCapSvc)
+	manager.SetAgentBudget(agentCfg.ContextWindow, agentCfg.MaxTokens)
 	return manager
 }
 

@@ -28,6 +28,7 @@ export interface SubagentsConfig {
 export interface CompactionConfig {
   reserveTokensFloor?: number;
   maxHistoryShare?: number;
+  maxRequestShare?: number;
   keepLastMessages?: number;
   timeoutSeconds?: number;
   memoryFlush?: {

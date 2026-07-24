@@ -340,6 +340,12 @@ func (m *ChatMethods) dispatchChatSends(requests []chatSendRequest) {
 	if userID != "" {
 		runCtxBase = store.WithUserID(runCtxBase, userID)
 	}
+	// Team Work gate runs before Loop.injectContext; inject the resolved agent
+	// budget now so the classifier cannot fall back to model/provider guesses.
+	runCtxBase = agent.WithAgentBudget(runCtxBase, loop)
+	if uid := loop.UUID(); uid != uuid.Nil {
+		runCtxBase = store.WithAgentID(runCtxBase, uid)
+	}
 	gate := m.applyTeamWorkGate(runCtxBase, params, loop, sessionKey)
 	params.Message = gate.message
 	// Inject team dispatch tracker: gates team_tasks create (must search/list first)
