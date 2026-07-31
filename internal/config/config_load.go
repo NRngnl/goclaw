@@ -394,6 +394,7 @@ func (c *Config) applyEnvOverrides() {
 
 	// Browser (for Docker-compose browser sidecar overlay)
 	envStr("GOCLAW_BROWSER_REMOTE_URL", &c.Tools.Browser.RemoteURL)
+	envStr("GOCLAW_BROWSER_BACKEND", &c.Tools.Browser.Backend)
 	if c.Tools.Browser.RemoteURL != "" {
 		c.Tools.Browser.Enabled = true
 	}
