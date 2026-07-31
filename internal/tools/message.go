@@ -141,9 +141,8 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *Result 
 	// Self-send guard: prevent agent from sending to its own chat via message tool.
 	// Text self-sends are always blocked (response goes through normal outbound).
 	// MEDIA self-sends are allowed ONLY when the file was NOT already queued for
-	// delivery (i.e. write_file was called with deliver=false). This prevents both
-	// duplicate delivery (deliver=true then message MEDIA:) and runaway retry loops
-	// (deliver=false then message MEDIA: blocked unconditionally).
+	// automatic delivery. This prevents both duplicate delivery and runaway retry
+	// loops while preserving explicit delivery of files that are not auto-queued.
 	ctxChannel := ToolChannelFromCtx(ctx)
 	ctxChatID := ToolChatIDFromCtx(ctx)
 	isSelfSend := ctxChannel != "" && ctxChatID != "" && channel == ctxChannel && target == ctxChatID
@@ -152,21 +151,22 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *Result 
 		if !isMediaSend {
 			return ErrorResult("You are already responding to this chat. Your response text will be delivered automatically. Do not use the message tool to send text to your own chat — just include the content in your response text. To deliver files, use write_file with deliver=true instead.")
 		}
-		// MEDIA self-send: block if ALL referenced files are already queued for delivery.
-		// Extracts paths from both standalone "MEDIA:path" and embedded multi-line messages.
+		// MEDIA self-send: block if any referenced file is already queued for
+		// delivery. Sending a mixed set would still duplicate the queued files;
+		// the model can retry with only the undelivered references.
 		if dm := DeliveredMediaFromCtx(ctx); dm != nil {
 			mediaRefs := embeddedMediaPattern.FindAllString(message, -1)
-			allDelivered := len(mediaRefs) > 0
+			hasDelivered := false
 			for _, raw := range mediaRefs {
 				if filePath, ok := t.resolveMediaPath(ctx, raw); ok {
-					if !dm.IsDelivered(filePath) {
-						allDelivered = false
+					if dm.IsDelivered(filePath) {
+						hasDelivered = true
 						break
 					}
 				}
 			}
-			if allDelivered {
-				return ErrorResult("This file is already queued for automatic delivery via write_file(deliver=true). Do not send it again. To deliver files that were written with deliver=false, use write_file again with deliver=true, or use message(MEDIA:path) which is allowed for undelivered files.")
+			if hasDelivered {
+				return ErrorResult("One or more files are already queued for automatic delivery. Do not send them again with message(MEDIA:path). Retry with only files that are not queued for automatic delivery.")
 			}
 		}
 	}

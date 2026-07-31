@@ -263,6 +263,43 @@ func retainedDelegationArtifactKey(tenantWorkspace string, delegationID uuid.UUI
 	return tenantWorkspace + "\x00" + delegationID.String()
 }
 
+func (t *DelegateTool) beginDelegationArtifactExchange(
+	tenantWorkspace string,
+	delegationID uuid.UUID,
+) {
+	key := retainedDelegationArtifactKey(tenantWorkspace, delegationID)
+	t.activeArtifactMu.Lock()
+	defer t.activeArtifactMu.Unlock()
+	if t.activeArtifacts == nil {
+		t.activeArtifacts = make(map[string]uint32)
+	}
+	t.activeArtifacts[key]++
+}
+
+func (t *DelegateTool) endDelegationArtifactExchange(
+	tenantWorkspace string,
+	delegationID uuid.UUID,
+) {
+	key := retainedDelegationArtifactKey(tenantWorkspace, delegationID)
+	t.activeArtifactMu.Lock()
+	defer t.activeArtifactMu.Unlock()
+	if t.activeArtifacts[key] <= 1 {
+		delete(t.activeArtifacts, key)
+		return
+	}
+	t.activeArtifacts[key]--
+}
+
+func (t *DelegateTool) delegationArtifactExchangeActive(
+	tenantWorkspace string,
+	delegationID uuid.UUID,
+) bool {
+	key := retainedDelegationArtifactKey(tenantWorkspace, delegationID)
+	t.activeArtifactMu.RLock()
+	defer t.activeArtifactMu.RUnlock()
+	return t.activeArtifacts[key] > 0
+}
+
 func (t *DelegateTool) runDelegationArtifactSweeper() {
 	ticker := time.NewTicker(delegationArtifactSweepInterval)
 	defer func() {
@@ -272,12 +309,16 @@ func (t *DelegateTool) runDelegationArtifactSweeper() {
 	for {
 		select {
 		case now := <-ticker.C:
-			t.recoverRetainedDelegationExchanges()
-			t.sweepRetainedDelegationExchanges(now)
+			t.maintainDelegationArtifacts(now)
 		case <-t.sweeperStop:
 			return
 		}
 	}
+}
+
+func (t *DelegateTool) maintainDelegationArtifacts(now time.Time) {
+	t.recoverRetainedDelegationExchanges()
+	t.sweepRetainedDelegationExchanges(now)
 }
 
 func (t *DelegateTool) recoverRetainedDelegationExchanges() {
@@ -348,6 +389,9 @@ func (t *DelegateTool) recoverTenantDelegationExchanges(tenantWorkspace string) 
 					"entry", name,
 				)
 			}
+			continue
+		}
+		if t.delegationArtifactExchangeActive(tenantWorkspace, delegationID) {
 			continue
 		}
 		exchangeRoot, err := delegationsRoot.openSubroot(name)

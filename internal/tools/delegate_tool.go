@@ -86,6 +86,9 @@ type DelegateTool struct {
 	sweeperStop    chan struct{}
 	sweeperDone    chan struct{}
 
+	activeArtifactMu sync.RWMutex
+	activeArtifacts  map[string]uint32
+
 	completionMu     sync.Mutex
 	completionClosed bool
 	completionWG     sync.WaitGroup
@@ -190,15 +193,16 @@ func NewDelegateToolWithAdmission(
 		admission = orchestration.NewChildRunAdmission(32, 128)
 	}
 	return &DelegateTool{
-		links:       links,
-		agents:      agents,
-		eventBus:    eb,
-		runFn:       runFn,
-		admission:   admission,
-		retained:    make(map[string]retainedDelegationArtifact),
-		sweeperStop: make(chan struct{}),
-		sweeperDone: make(chan struct{}),
-		closeDone:   make(chan struct{}),
+		links:           links,
+		agents:          agents,
+		eventBus:        eb,
+		runFn:           runFn,
+		admission:       admission,
+		retained:        make(map[string]retainedDelegationArtifact),
+		sweeperStop:     make(chan struct{}),
+		sweeperDone:     make(chan struct{}),
+		activeArtifacts: make(map[string]uint32),
+		closeDone:       make(chan struct{}),
 	}
 }
 
@@ -717,6 +721,9 @@ func collectDelegateInputs(callerWorkspace string, explicitInputs, currentMedia 
 }
 
 func (t *DelegateTool) runArtifactExchange(ctx context.Context, job *delegateArtifactJob) (dr DelegateResult, returnErr error) {
+	t.beginDelegationArtifactExchange(job.tenantWorkspace, job.delegationID)
+	defer t.endDelegationArtifactExchange(job.tenantWorkspace, job.delegationID)
+
 	exchange, err := NewDelegationArtifactExchange(
 		job.tenantWorkspace,
 		job.tenantID,

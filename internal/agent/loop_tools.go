@@ -118,6 +118,12 @@ func (l *Loop) processToolResult(
 				mr.Prompt = result.MediaPrompts[i]
 			}
 			rs.mediaResults = append(rs.mediaResults, mr)
+			// The file is now queued for the run's automatic outbound delivery.
+			// Mark it so a later message(MEDIA:same_path) self-send cannot publish
+			// the same attachment before the final response is dispatched.
+			if dm := tools.DeliveredMediaFromCtx(ctx); dm != nil {
+				dm.Mark(cleaned)
+			}
 		}
 	} else if mr := parseMediaResult(result.ForLLM); mr != nil {
 		// Security (egress boundary): a tool's MEDIA:<path> output is taken
@@ -129,6 +135,9 @@ func (l *Loop) processToolResult(
 		if cleaned, ok := confineToAnyRoot(mr.Path, mediaRoots); ok {
 			mr.Path = cleaned
 			rs.mediaResults = append(rs.mediaResults, *mr)
+			if dm := tools.DeliveredMediaFromCtx(ctx); dm != nil {
+				dm.Mark(cleaned)
+			}
 		} else {
 			slog.Warn("security.media_path_rejected",
 				"agent", l.id, "tool", tc.Name, "path", mr.Path,

@@ -1800,6 +1800,178 @@ func TestDelegateTool_RecoversStaleArtifactLifecycleStates(t *testing.T) {
 	}
 }
 
+func TestDelegateTool_PeriodicArtifactMaintenancePreservesActiveExchange(t *testing.T) {
+	tenantWorkspace := t.TempDir()
+	callerWorkspace := filepath.Join(tenantWorkspace, "agents", "caller")
+	if err := os.MkdirAll(callerWorkspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	callerRoot, err := OpenDelegationArtifactRoot(callerWorkspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerRoot.Close()
+
+	delegationID := uuid.New()
+	runStarted := make(chan struct{})
+	resumeRun := make(chan struct{})
+	var tool *DelegateTool
+	tool = NewDelegateTool(
+		noopAgentLink{},
+		noopAgentCRUD{},
+		nil,
+		func(_ context.Context, req DelegateRequest) (DelegateResult, error) {
+			close(runStarted)
+			<-resumeRun
+			if !tool.delegationArtifactExchangeActive(tenantWorkspace, delegationID) {
+				return DelegateResult{}, errors.New("delegation artifact exchange became inactive during run")
+			}
+			if err := os.WriteFile(
+				filepath.Join(req.DelegateOutputsPath, "result.txt"),
+				[]byte("active result"),
+				0o600,
+			); err != nil {
+				return DelegateResult{}, err
+			}
+			return DelegateResult{Content: "done"}, nil
+		},
+	)
+	tool.workspace = tenantWorkspace
+	defer tool.Close()
+
+	job := &delegateArtifactJob{
+		req:             DelegateRequest{DelegationID: delegationID.String()},
+		callerRoot:      callerRoot,
+		callerWorkspace: callerWorkspace,
+		tenantWorkspace: tenantWorkspace,
+		tenantID:        store.MasterTenantID,
+		delegationID:    delegationID,
+	}
+	job.callerLocation = tool.resolveDelegationCallerLocation(job)
+
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := tool.runArtifactExchange(context.Background(), job)
+		runDone <- err
+	}()
+	select {
+	case <-runStarted:
+	case <-time.After(2 * time.Second):
+		close(resumeRun)
+		t.Fatal("delegated run did not start")
+	}
+	tool.addRetainedDelegationArtifact(retainedDelegationArtifact{
+		tenantWorkspace: tenantWorkspace,
+		tenantID:        store.MasterTenantID,
+		delegationID:    uuid.New(),
+		retainUntil:     time.Now().Add(time.Hour),
+	})
+	tool.maintainDelegationArtifacts(time.Now())
+
+	lifecyclePath := filepath.Join(
+		tenantWorkspace,
+		"collaboration",
+		"delegations",
+		delegationID.String(),
+		delegationArtifactLifecycleFile,
+	)
+	stateBytes, stateErr := os.ReadFile(lifecyclePath)
+	var state delegationArtifactLifecycleState
+	if stateErr == nil {
+		stateErr = json.Unmarshal(stateBytes, &state)
+	}
+	close(resumeRun)
+	runErr := <-runDone
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	if state.Status != artifactLifecycleRunning {
+		t.Fatalf("active lifecycle status = %q, want %q", state.Status, artifactLifecycleRunning)
+	}
+	if runErr != nil {
+		t.Fatalf("active exchange run after maintenance: %v", runErr)
+	}
+	if tool.delegationArtifactExchangeActive(tenantWorkspace, delegationID) {
+		t.Fatal("completed delegation artifact exchange remained active")
+	}
+	publishedOutput := filepath.Join(
+		callerWorkspace,
+		".delegations",
+		delegationID.String(),
+		"outputs",
+		"result.txt",
+	)
+	if got, err := os.ReadFile(publishedOutput); err != nil || string(got) != "active result" {
+		t.Fatalf("published output = %q, %v", got, err)
+	}
+}
+
+func TestDelegateTool_PeriodicArtifactMaintenanceRecoversUnregisteredExchange(t *testing.T) {
+	tenantWorkspace := t.TempDir()
+	callerWorkspace := filepath.Join(tenantWorkspace, "agents", "caller")
+	if err := os.MkdirAll(callerWorkspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	callerRoot, err := OpenDelegationArtifactRoot(callerWorkspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callerRoot.Close()
+
+	delegationID := uuid.New()
+	exchange, err := NewDelegationArtifactExchange(
+		tenantWorkspace,
+		store.MasterTenantID,
+		delegationID,
+		DelegationArtifactLimits{},
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exchange.Close()
+
+	tool := NewDelegateTool(
+		noopAgentLink{},
+		noopAgentCRUD{},
+		nil,
+		func(_ context.Context, _ DelegateRequest) (DelegateResult, error) {
+			return DelegateResult{}, nil
+		},
+	)
+	tool.workspace = tenantWorkspace
+	defer tool.Close()
+
+	job := &delegateArtifactJob{
+		req:             DelegateRequest{DelegationID: delegationID.String()},
+		callerRoot:      callerRoot,
+		callerWorkspace: callerWorkspace,
+		tenantWorkspace: tenantWorkspace,
+		tenantID:        store.MasterTenantID,
+		delegationID:    delegationID,
+	}
+	job.callerLocation = tool.resolveDelegationCallerLocation(job)
+	if err := tool.updateActiveDelegationLifecycle(exchange, job); err != nil {
+		t.Fatalf("update active lifecycle: %v", err)
+	}
+	if err := tool.markDelegationRunning(exchange, job, time.Now()); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	tool.maintainDelegationArtifacts(time.Now())
+
+	state, err := readDelegationArtifactLifecycleState(exchange.root, delegationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != artifactLifecycleFailed || state.ReasonCode != "artifact_recovered_stale" {
+		t.Fatalf("unregistered lifecycle = %#v, want recovered stale failure", state)
+	}
+	if _, ok := tool.retained[retainedDelegationArtifactKey(tenantWorkspace, delegationID)]; !ok {
+		t.Fatalf("unregistered exchange was not added to retained registry: %#v", tool.retained)
+	}
+}
+
 func TestDelegateTool_RecoveryPromotesDurablePublishingState(t *testing.T) {
 	tenantWorkspace := t.TempDir()
 	callerWorkspace := filepath.Join(tenantWorkspace, "agents", "caller")
