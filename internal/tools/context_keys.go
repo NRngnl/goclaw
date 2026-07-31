@@ -774,12 +774,12 @@ func WorkstationIDFromCtx(ctx context.Context) string {
 	return v
 }
 
-// --- Delivered media tracker (write_file → message self-send dedup) ---
+// --- Delivered media tracker (automatic delivery → direct-send dedup) ---
 
 const ctxDeliveredMedia toolContextKey = "tool_delivered_media"
 
-// DeliveredMedia tracks file paths already queued for auto-delivery by write_file.
-// Injected once per run via WithDeliveredMedia; write_file marks paths, message reads them.
+// DeliveredMedia tracks file paths already queued or sent during an agent run.
+// Automatic media producers mark paths, and direct-send tools consult the tracker.
 // Thread-safe: tools may execute in parallel goroutines.
 type DeliveredMedia struct {
 	mu    sync.Mutex

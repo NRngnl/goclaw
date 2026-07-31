@@ -403,8 +403,8 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	// Inject agent key into context for tool-level resolution (multiple agents share tool registry)
 	ctx = tools.WithToolAgentKey(ctx, l.id)
 
-	// Inject delivered media tracker so write_file and message tool can coordinate:
-	// write_file(deliver=true) marks paths, message self-send guard checks before allowing.
+	// Inject delivered media tracker so automatic output collection and direct
+	// media sends can coordinate within this run.
 	ctx = tools.WithDeliveredMedia(ctx, tools.NewDeliveredMedia())
 
 	// Security: truncate oversized user messages gracefully (feed truncation notice into LLM)
