@@ -169,8 +169,14 @@ func (t *VaultReadTool) Execute(ctx context.Context, args map[string]any) *Resul
 	}
 
 	// Text-only gate, layer 3: UTF-8 sniff on first N bytes of content.
-	sniffLen := min(len(content), vaultReadUTF8SniffBytes)
-	if !utf8.Valid(content[:sniffLen]) {
+	sniff := content[:min(len(content), vaultReadUTF8SniffBytes)]
+	if len(sniff) < len(content) {
+		// The sniff window ends mid-content, so its last bytes may be the
+		// dangling prefix of a rune the cut split in half. Repair that before
+		// judging, otherwise valid non-ASCII text is reported as binary.
+		sniff = trimPartialTrailingRune(sniff)
+	}
+	if !utf8.Valid(sniff) {
 		return ErrorResult("file content is not valid UTF-8 text — use read_image/read_audio/read_video/read_document for binary files")
 	}
 
@@ -407,7 +413,25 @@ func readCapped(path string, maxBytes int) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	if len(buf) > maxBytes {
-		return buf[:maxBytes], true, nil
+		// The cap is a byte offset, so it can land inside a multi-byte rune;
+		// drop the dangling prefix instead of emitting a broken character.
+		return trimPartialTrailingRune(buf[:maxBytes]), true, nil
 	}
 	return buf, false, nil
+}
+
+// trimPartialTrailingRune removes up to utf8.UTFMax-1 trailing bytes from b so
+// that a cut made at a byte offset does not leave the prefix of a multi-byte
+// rune dangling. Accented Vietnamese characters take 2-3 bytes, so a plain byte
+// cut breaks the encoding of otherwise valid text; ASCII never does.
+//
+// Only call this on data known to be truncated. On complete content the
+// trailing bytes belong to the file itself and must stay as they are, so that
+// genuinely broken bytes are still detected. Stopping after 3 trims keeps the
+// repair confined to the cut: a longer run of invalid bytes is real corruption.
+func trimPartialTrailingRune(b []byte) []byte {
+	for trimmed := 0; trimmed < utf8.UTFMax-1 && len(b) > 0 && !utf8.Valid(b); trimmed++ {
+		b = b[:len(b)-1]
+	}
+	return b
 }

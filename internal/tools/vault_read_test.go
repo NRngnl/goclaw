@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -456,6 +457,122 @@ func TestVaultRead_Oversize_Truncated(t *testing.T) {
 	}
 	if !strings.Contains(res.ForLLM, "truncated") {
 		t.Fatalf("expected truncation marker, got: %s", res.ForLLM)
+	}
+}
+
+// --- 12b. non-ASCII text whose rune straddles the sniff window → readable. ---
+func TestVaultRead_MultibyteRuneAtSniffBoundary_Allowed(t *testing.T) {
+	// The sniff window ends at vaultReadUTF8SniffBytes. Pad with ASCII so the
+	// window ends inside a multi-byte rune, leaving 1 or 2 bytes of it dangling.
+	cases := []struct {
+		name    string
+		padding int
+		char    string // 2-byte and 3-byte Vietnamese characters
+	}{
+		{"two-byte rune split", vaultReadUTF8SniffBytes - 1, "â"},
+		{"three-byte rune split after one byte", vaultReadUTF8SniffBytes - 1, "ấ"},
+		{"three-byte rune split after two bytes", vaultReadUTF8SniffBytes - 2, "ấ"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tenantID := uuid.New()
+			agentID := uuid.New()
+			docID := uuid.New()
+			doc := &store.VaultDocument{
+				ID: docID.String(), TenantID: tenantID.String(),
+				Scope: "shared", Path: "npk.md", Title: "NPK", DocType: "note",
+			}
+			tool, ws := newVaultReadTestTool(t, doc)
+			// ~25KB total so the file is well past the sniff window.
+			body := strings.Repeat("a", tc.padding) + strings.Repeat(tc.char+" phân bón ", 2000)
+			if len(body) <= vaultReadUTF8SniffBytes {
+				t.Fatalf("fixture must exceed the sniff window, got %d bytes", len(body))
+			}
+			if utf8.ValidString(body[:vaultReadUTF8SniffBytes]) {
+				t.Fatalf("fixture must split a rune at the sniff boundary")
+			}
+			writeFile(t, ws, "npk.md", body)
+
+			res := tool.Execute(makeCtx(tenantID, agentID),
+				map[string]any{"doc_id": docID.String()})
+			if res.IsError {
+				t.Fatalf("valid UTF-8 document rejected: %s", res.ForLLM)
+			}
+			if !strings.Contains(res.ForLLM, "phân bón") {
+				t.Fatalf("expected document content, got: %.120s", res.ForLLM)
+			}
+		})
+	}
+}
+
+// --- 12c. binary content past the sniff window → still rejected. ---
+func TestVaultRead_LargeBinaryContent_UTF8Rejected(t *testing.T) {
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	docID := uuid.New()
+	doc := &store.VaultDocument{
+		ID: docID.String(), TenantID: tenantID.String(),
+		Scope: "shared", Path: "renamed-png.md", Title: "Blob", DocType: "note",
+	}
+	tool, ws := newVaultReadTestTool(t, doc)
+	// PNG magic bytes plus 20KB of invalid sequences: trimming the tail of the
+	// sniff window must not rescue this.
+	blob := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A},
+		bytes.Repeat([]byte{0xFF, 0xFE, 0xC3, 0x28}, 5000)...)
+	writeBytes(t, ws, "renamed-png.md", blob)
+
+	res := tool.Execute(makeCtx(tenantID, agentID),
+		map[string]any{"doc_id": docID.String()})
+	if !res.IsError || !strings.Contains(res.ForLLM, "UTF-8") {
+		t.Fatalf("expected UTF-8 rejection, got: %.120s", res.ForLLM)
+	}
+}
+
+// --- 12d. broken byte at the end of a file shorter than the sniff window. ---
+func TestVaultRead_ShortFileTrailingBrokenByte_Rejected(t *testing.T) {
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	docID := uuid.New()
+	doc := &store.VaultDocument{
+		ID: docID.String(), TenantID: tenantID.String(),
+		Scope: "shared", Path: "short.md", Title: "Short", DocType: "note",
+	}
+	tool, ws := newVaultReadTestTool(t, doc)
+	// Nothing is truncated here, so the trailing 0xC3 is the file's own byte
+	// and must still be reported as broken.
+	writeBytes(t, ws, "short.md", append([]byte("bảng giá phân bón"), 0xC3))
+
+	res := tool.Execute(makeCtx(tenantID, agentID),
+		map[string]any{"doc_id": docID.String()})
+	if !res.IsError || !strings.Contains(res.ForLLM, "UTF-8") {
+		t.Fatalf("expected UTF-8 rejection, got: %.120s", res.ForLLM)
+	}
+}
+
+// --- 12e. max_bytes landing inside a rune → no broken character in output. ---
+func TestVaultRead_MaxBytes_CutInsideRune_NoReplacementChar(t *testing.T) {
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	docID := uuid.New()
+	doc := &store.VaultDocument{
+		ID: docID.String(), TenantID: tenantID.String(),
+		Scope: "shared", Path: "gia.md", Title: "Gia", DocType: "note",
+	}
+	tool, ws := newVaultReadTestTool(t, doc)
+	body := strings.Repeat("ấm ", 500) // 5 bytes per repetition
+	writeFile(t, ws, "gia.md", body)
+
+	// 101 is not a multiple of 5, so the cap falls inside the 3-byte "ấ".
+	res := tool.Execute(makeCtx(tenantID, agentID),
+		map[string]any{"doc_id": docID.String(), "max_bytes": float64(101)})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.ForLLM)
+	}
+	if !strings.Contains(res.ForLLM, "truncated") {
+		t.Fatalf("expected truncation marker, got: %.120s", res.ForLLM)
+	}
+	if strings.ContainsRune(res.ForLLM, utf8.RuneError) {
+		t.Fatalf("truncated output contains a broken character: %q", res.ForLLM)
 	}
 }
 
