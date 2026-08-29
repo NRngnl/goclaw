@@ -40,6 +40,19 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 	// Matching OpenClaw TS: model-compat.ts → isOpenAINativeEndpoint().
 	useDevRole := isOpenAINativeEndpoint(p.apiBase)
 
+	// A conversation where some assistant turn captured reasoning is running in
+	// thinking mode, so every replayed assistant message must carry the field —
+	// turns that produced no reasoning of their own included. DeepSeek rejects
+	// the gap with HTTP 400 "The `reasoning_content` in the thinking mode must
+	// be passed back to the API." Trace: 01a04c34-a74b-7be7-973e-2cb66ea68f3d.
+	historyHasReasoning := false
+	for _, m := range inputMessages {
+		if m.Role == "assistant" && m.Thinking != "" {
+			historyHasReasoning = true
+			break
+		}
+	}
+
 	// Convert messages to proper OpenAI wire format.
 	// This is necessary because our internal Message/ToolCall structs don't match
 	// the OpenAI API format (tool_calls need type+function wrapper, arguments as JSON string).
@@ -63,12 +76,14 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 		// kimi-k2-turbo-preview), assistant tool-call messages MUST carry
 		// reasoning_content even if empty — otherwise upstream returns 400 "thinking
 		// is enabled but reasoning_content is missing in assistant tool call message".
+		// DeepSeek enforces the same rule, but only once the conversation is in
+		// thinking mode (historyHasReasoning).
 		if m.Role == "assistant" && openAIWireAssistantReasoningContent(model) {
 			switch {
 			case m.Thinking != "":
 				msg["reasoning_content"] = m.Thinking
-			case p.providerType == "kimi_coding":
-				// Send empty string rather than omit the field — satisfies Kimi's
+			case p.providerType == "kimi_coding" || historyHasReasoning:
+				// Send empty string rather than omit the field — satisfies the
 				// "must be present" check without inventing reasoning content.
 				msg["reasoning_content"] = ""
 			}
