@@ -276,7 +276,17 @@ func handleTeammateMessage(
 		SenderID:        teammateSenderID, // real user who triggered the teammate dispatch (#915)
 		Role:            teammateRole,     // RBAC role for admin bypass during teammate turn (#915)
 		RunID:           fmt.Sprintf("teammate-%s-%s", msg.Metadata[tools.MetaFromAgent], msg.Metadata[tools.MetaToAgent]),
-		Stream:          false,
+		// Streamed for connection liveness, not for delivery. A teammate run is
+		// never registered with the channel manager, so HandleAgentEvent drops its
+		// chunks on the first line and nothing is delivered incrementally; the task
+		// result still comes from the final RunResult. What streaming buys is the
+		// response headers arriving immediately: a non-streamed request to a slow
+		// reasoning model holds a silent connection for the whole generation, and
+		// ResponseHeaderTimeout kills it — observed as
+		// `http2: timeout awaiting response headers` on a member asked to produce a
+		// large file, while the same model over the same provider was fine on a
+		// streamed channel run.
+		Stream:          true,
 		TeamTaskID:      msg.Metadata[tools.MetaTeamTaskID],
 		TeamWorkspace:   msg.Metadata[tools.MetaTeamWorkspace],
 		LeaderAgentID:   msg.Metadata[tools.MetaLeaderAgentID],
